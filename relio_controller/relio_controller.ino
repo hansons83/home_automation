@@ -11,7 +11,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER "1.1.0"
+#define SOFT_VER "1.2.0"
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -32,10 +32,11 @@ OneWire        ds2401(A1);
 
 static const uint8_t EEPROM_VERSION_OFFSET  = 0;
 static const uint8_t EEPROM_SETTINGS_OFFSET = 1;
-static const uint8_t EEPROM_VERSION         = 0x55;
+static const uint8_t EEPROM_VERSION         = 0x56;
 
 static const uint8_t ETH_SHIELD_RESET_PIN   = A0;
 
+static const uint8_t INPUT_CHECK_MS = 2;
 static const uint8_t NUM_IOS = 8;
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
@@ -44,9 +45,9 @@ static const uint8_t MCP27008_ADRESS = 0x27;
 
 static struct StoredSettings{
   MqttSettings mqtt;
-  // 0 - input changes output, output is published and subscribed
-  // 1 - input and output independent, input is published, output is published and subscribed
-  byte         mode[NUM_IOS];
+  // 0 - No timer, input toggles output
+  // >0 - If on will be off after x miliseconds
+  uint8_t      timer[NUM_IOS];
 } boardSettings;
 
 static const uint8_t TOPIC_ID_START_INDEX = 6;
@@ -65,12 +66,13 @@ char clientId[] = { "RELIO_\0\0\0\0\0\0\0\0\0"  };
 // Update these with values suitable for your network.
 byte mac[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-static  uint8_t inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
-static  byte    inputsState = 0;
-static  byte    inputsStateToPublish = 0;
-static  byte    lastinputsState = 0;
-static  byte    outputsState = 0;
-static  byte    outputsStateToPublish = 0;
+static  uint8_t  inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
+static  byte     inputsState = 0;
+static  byte     inputsStateToPublish = 0;
+static  byte     lastinputsState = 0;
+static  byte     outputsState = 0;
+static  byte     outputsStateToPublish = 0;
+static  uint32_t outputsTimer[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 void setOutputState(int index, bool state)
 {
@@ -82,6 +84,8 @@ void setOutputState(int index, bool state)
   else
   {
     clear_bit(outputsState, index);
+    // Output is off, reset timer
+    outputsTimer[index] = 0;
   }
   if(outputsState != currentState)
   {
@@ -153,9 +157,24 @@ void readInputsInterruptHandler()
     {
       clear_bit(inputsState, i);
     }
+
+    // Check if timer elapsed if configured
+    if(outputsTimer[i] > 0)
+    {
+      // Is it time to turn off output?
+      if(outputsTimer[i] <= INPUT_CHECK_MS)
+      {
+        setOutputState(i, false );
+      }
+      else
+      {
+        outputsTimer[i] -= INPUT_CHECK_MS;
+      }
+    }
+    
     if(get_bit(inputsState, i) != get_bit(lastinputsState, i))
     {
-      if(!boardSettings.mode[i])
+      if(boardSettings.timer[i] == 0)
       {
         if(get_bit(inputsState, i))
         {
@@ -164,7 +183,7 @@ void readInputsInterruptHandler()
       }
       else
       {  
-        set_bit(inputsStateToPublish, i);
+        outputsTimer[i] = boardSettings.timer[i] * 1000; // Convert to miliseconds
       }
     }
   }
@@ -219,7 +238,7 @@ void checkInputsAndPublish(PubSubClient& client)
   
   for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
-    if(boardSettings.mode[i] && get_bit(currentInputsStateToPublish, i))
+    if(get_bit(currentInputsStateToPublish, i))
     {
       inputStateTopic[TOPIC_IN_STATE_CHANNEL_INDEX] = i + '1';
       if(get_bit(currentInputsState, i))
@@ -274,10 +293,10 @@ void setup()
   Serial.println(outputStateTopic);
   Serial.println(clientId);
   
-  Serial.print(F("Mode: "));
+  Serial.print(F("Timer: "));
   for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
-    Serial.print(boardSettings.mode[i]);
+    Serial.print(boardSettings.timer[i]);
     if(i+1 < NUM_IOS)Serial.print(F(", "));
     else Serial.println(F(""));
   }
@@ -359,12 +378,12 @@ bool httpReqHandler(char* data, uint16_t size)
   char *pch, *modeStr;
   byte counter;
   bool retVal = false;
-  modeStr = strstr(data, "mode=");
+  modeStr = strstr(data, "timer=");
   if(modeStr != NULL)
   {
     counter = 0;
     modeStr += 5;
-    Serial.print(F("mode: "));
+    Serial.print(F("timer: "));
     pch = strtok (modeStr, ",.&");
     while (pch != NULL && counter < 8)
     {
@@ -374,7 +393,7 @@ bool httpReqHandler(char* data, uint16_t size)
       }
       Serial.print(pch);
       if(counter < 7) Serial.print(F(","));
-      boardSettings.mode[counter] = atoi(pch);
+      boardSettings.timer[counter] = atoi(pch);
       // go to next token
       pch = strtok (NULL, ",.&");
       ++counter;
@@ -386,10 +405,10 @@ bool httpReqHandler(char* data, uint16_t size)
 }
 void httpRespBuilder(EthernetClient& client)
 {
-  client.print(F("Outputs mode: \t"));
+  client.print(F("Outputs timer: \t"));
   for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
-    client.print(boardSettings.mode[i]);
+    client.print(boardSettings.timer[i]);
     if(i+1 < NUM_IOS)client.print(F(", "));
   }
   client.println(F("<BR>"));
