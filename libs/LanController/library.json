@@ -1,0 +1,23 @@
+{
+    "name": "LanController",
+    "description": "",
+    "keywords": "",
+    "authors": [
+        {
+            "name": "Jakub Swiatkiewicz",
+            "email": "",
+            "url": "",
+            "maintainer": true
+        },
+    ],
+    "repository": {
+        "type": "git",
+        "url": ""
+    },
+    "version": "1.0.0",
+    "homepage": "",
+    "frameworks": "Arduino",
+    "examples": [
+        "examples/*/*.pde"
+    ]
+}
