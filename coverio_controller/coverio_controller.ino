@@ -11,7 +11,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER "1.1.0"
+#define SOFT_VER F("1.2.0")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -22,6 +22,7 @@
 #define I2C_FASTMODE 1
 
 #include <utils.hpp>
+#define HTTP_REQ_BUF_SZ 220
 #include <http_server.hpp>
 
 SoftWire       sWire = SoftWire();
@@ -35,6 +36,13 @@ OneWire        ds2401(A1);
 #define EEPROM_VERSION         0x55
 
 #define ETH_SHIELD_RESET_PIN   A0
+
+static const uint8_t NUM_IOS = 8;
+static const uint8_t INPUT_HIGH_STATE = 0xFF;
+static const uint8_t INPUT_LOW_STATE = 0x00;
+static const uint8_t INPUT_PINS_START = 2;
+static const uint8_t MCP27008_ADRESS = 0x27;
+static const uint8_t PCF8591_ADRESS = 0x48;
 
 static struct StoredSettings{
   MqttSettings mqtt;
@@ -61,13 +69,6 @@ char clientId[]          = { "COVERIO_\0\0\0\0\0\0\0\0\0" };
 
 // Update these with values suitable for your network.
 byte mac[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-
-static const uint8_t NUM_IOS = 8;
-static const uint8_t INPUT_HIGH_STATE = 0xFF;
-static const uint8_t INPUT_LOW_STATE = 0x00;
-static const uint8_t INPUT_PINS_START = 2;
-static const uint8_t MCP27008_ADRESS = 0x27;
-static const uint8_t PCF8591_ADRESS = 0x48;
 
 static  uint8_t  inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  byte     inputsState = 0;
@@ -112,12 +113,12 @@ enum ChannelDir
 
 const char* stateNames[] = 
 {
-  "ENTER_IDLE",
-  "MONITOR_IDLE",
-  "ENTER_POS",
-  "MONITOR_POS",
-  "ENTER_TILT",
-  "MONITOR_TILT",
+  "E_IDLE",
+  "M_IDLE",
+  "E_POS",
+  "M_POS",
+  "E_TILT",
+  "M_TILT",
 };
 
 struct BlindState;
@@ -146,7 +147,7 @@ void setChannelMoveDir(uint8_t chInd, ChannelDir dir)
 
   expectedtState = (expectedtState & ~(0x03 << chInd)) | (dir << chInd);
 
-  Serial.print("O: ");
+  Serial.print(F("O: "));
   Serial.println(expectedtState, BIN);
   if(outputsState != expectedtState)
   {
@@ -274,13 +275,13 @@ void idleMonitor(uint8_t chInd, uint8_t elapsedMs)
   }
   if(upButtonPressed(chInd))
   {
-    Serial.print("Blind up: "); Serial.println(chInd);
+    Serial.print(F("Blind up: ")); Serial.println(chInd);
     state.expectedPos = 0;
     enterState(chInd, CHANNEL_ENTER_POS); 
   }
   else if(downButtonPressed(chInd))
   {
-    Serial.print("Blind down: "); Serial.println(chInd);
+    Serial.print(F("Blind down: ")); Serial.println(chInd);
     state.expectedPos = 100;
     enterState(chInd, CHANNEL_ENTER_POS); 
   }
@@ -411,7 +412,7 @@ void tiltMonitor(uint8_t chInd, uint8_t elapsedMs)
  */
 void executeStateMachine(uint8_t elapsedMs)
 {
-  for(int i = 0; i < 4; ++i)
+  for(byte i = 0; i < 4; ++i)
   {
     switch(blindStateArray[i].currentState)
     {
@@ -515,7 +516,7 @@ void blindMoveMonitor(uint8_t chInd, BlindState& state, uint8_t elapsedMs)
 
 void readInputsInterruptHandler()
 {
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     inputCounters[i] <<= 1;
     if(digitalRead(INPUT_PINS_START + i) == LOW)
@@ -669,7 +670,7 @@ void checkInputsAndPublish(PubSubClient& client)
   if(currentInputsStateToPublish == 0)
     return;
   
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     /*if(get_bit(boardSettings.mode, i) && get_bit(currentInputsStateToPublish, i))
     {
@@ -693,10 +694,10 @@ void setup()
   while (!Serial) {
     ; // wait for serial port to connect. Needed for Leonardo only
   }
-  Serial.print(F("BLINDSIO ver: "));
+  Serial.print(F("COVERIO ver: "));
   Serial.println(SOFT_VER);
  
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     pinMode(INPUT_PINS_START + i, INPUT_PULLUP);      // sets the switch sensor digital pin as input
   }
@@ -722,7 +723,7 @@ void setup()
   
   getMacAddress(ds2401, mac);
     
-  for (uint8_t i = 0; i < 4; i++)
+  for (byte i = 0; i < 4; i++)
   {
     byteToHexStr(mac[i+2], clientId + (TOPIC_ID_START_INDEX + i*2));
   }
@@ -737,7 +738,7 @@ void setup()
   Serial.println(tiltStateTopic);
   Serial.println(clientId);
   
-  for(uint8_t i = 0; i < 4; ++i)
+  for(byte i = 0; i < 4; ++i)
   {
     Serial.print(boardSettings.mqtt.mqtt_ip[i]);
     if(i < 3)Serial.print(".");
@@ -811,56 +812,161 @@ void handleMqttClient()
     mqttClient.loop();
   }
 }
-bool httpReqHandler(char* data, uint16_t size)
+
+CustomHandlers customHandlers = 
 {
-  char *pch, *modeStr;
-  byte counter;
-  bool retVal = false;
-  /*modeStr = strstr(data, "mode=");
-  if(modeStr != NULL)
+  .customProcess = processCustomParams,
+  .customForms = addCustomForms,
+  .customSend = addCustomSend,
+  .mqtt_ptr = &boardSettings.mqtt
+};
+bool parseOpenTime(const char* reqStr, uint32_t* timersArray)
+{
+  int  iArray[4];
+  bool result = false;
+  char* strPtr = strstr(reqStr, "&open_time=");
+  if(strPtr)
   {
-    counter = 0;
-    modeStr += 5;
-    Serial.print(F("mode: "));
-    pch = strtok (modeStr, ",.&");
-    while (pch != NULL && counter < 8)
+    strPtr += 10;
+    if(sscanf(strPtr, "=%d,%d,%d,%d&", iArray, iArray+1, iArray+2, iArray+3) == 4)
     {
-      if(!isdigit(pch[0]))
-      {
-        break;
-      }
-      Serial.print(pch);
-      if(counter < 7) Serial.print(F(","));
-      boardSettings.mode[counter] = atoi(pch);
-      // go to next token
-      pch = strtok (NULL, ",.&");
-      ++counter;
+      for(byte i = 0; i < 4; ++i)
+        timersArray[i] = iArray[i];
+        
+      result = true;
+    }
+  }
+  return result;
+}
+
+bool parseCloseTime(const char* reqStr, uint32_t* timersArray)
+{
+  int  iArray[4];
+  bool result = false;
+  char* strPtr = strstr(reqStr, "&close_time=");
+  if(strPtr)
+  {
+    strPtr += 11;
+    if(sscanf(strPtr, "=%d,%d,%d,%d&", iArray, iArray+1, iArray+2, iArray+3) == 4)
+    {
+      for(byte i = 0; i < 4; ++i)
+        timersArray[i] = iArray[i];
+        
+      result = true;
+    }
+  }
+  return result;
+}
+bool parseTiltTime(const char* reqStr, uint32_t* timersArray)
+{
+  int  iArray[4];
+  bool result = false;
+  char* strPtr = strstr(reqStr, "&tilt_time=");
+  if(strPtr)
+  {
+    strPtr += 10;
+    if(sscanf(strPtr, "=%d,%d,%d,%d&", iArray, iArray+1, iArray+2, iArray+3) == 4)
+    {
+      for(byte i = 0; i < 4; ++i)
+        timersArray[i] = iArray[i];
+        
+      result = true;
+    }
+  }
+  return result;
+}
+
+bool processCustomParams(const char* reqStr)
+{
+  bool result = false;
+  if(parseOpenTime(reqStr, boardSettings.open_time))
+  {
+    Serial.print(F("Received: open_time\t:"));
+    for(byte i = 0; i < 4; ++i)
+    {
+      Serial.print(boardSettings.open_time[i]);
+      if(i<3)Serial.print(F(","));
     }
     Serial.println(F(""));
-    retVal = true;
-  }*/
-  return retVal;
-}
-void httpRespBuilder(EthernetClient& client)
-{
-  /*client.print(F("Outputs mode: \t"));
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
-  {
-    client.print(boardSettings.mode[i]);
-    if(i+1 < NUM_IOS)client.print(F(", "));
+    result = true;
   }
-  client.println(F("<BR>"));
-  
+  if(parseCloseTime(reqStr, boardSettings.close_time))
+  {
+    Serial.print(F("Received: close_time\t:"));
+    for(byte i = 0; i < 4; ++i)
+    {
+      Serial.print(boardSettings.close_time[i]);
+      if(i<3)Serial.print(F(","));
+    }
+    Serial.println(F(""));
+    result = true;
+  }
+  if(parseTiltTime(reqStr, boardSettings.tilt_time))
+  {
+    Serial.print(F("Received: tilt_time\t:"));
+    for(byte i = 0; i < 4; ++i)
+    {
+      Serial.print(boardSettings.tilt_time[i]);
+      if(i<3)Serial.print(F(","));
+    }
+    Serial.println(F(""));
+    result = true;
+  }
+  return result;
+}
+void addCustomForms(EthernetClient& client)
+{
+  client.println(F("\n\t\tOpen time(ms)\t\tClose time(ms)\t\tTilt time(ms)"));
+  for(byte i = 0; i < 4; ++i)
+  {
+    client.print(F("  Channel "));client.print(i+1);
+    client.print(F("\t<input type=\"text\" name=\"fo"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
+    client.print(boardSettings.open_time[i]);
+    client.print(F("\">"));
+    client.print(F("\t\t<input type=\"text\" name=\"fc"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
+    client.print(boardSettings.close_time[i]);
+    client.print(F("\">"));
+    client.print(F("\t\t<input type=\"text\" name=\"ft"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
+    client.print(boardSettings.tilt_time[i]);
+    client.println(F("\">"));
+  }
+
+  client.println(F(""));
   client.print(F("<H1>State:</H1>"));
-  client.print(F("Soft version: \t\t"));
-  client.println(SOFT_VER);
-  client.print(F("Subscription: \t\t"));
-  client.println(outputCommandTopic);
-  client.print(F("MQTT connection state: \t"));
+  client.print(F("\tMQTT client id:\t\t"));
+  client.println(clientId);
+  client.print(F("\tMQTT subscription:\t"));
+  client.print(posCommandTopic);
+  client.print(F(", "));
+  client.println(tiltCommandTopic);
+  client.print(F("\tMQTT connection state:\t"));
   client.println(mqttClient.state());
-  client.print(F("Uptime: \t\t"));
-  client.println(millis());
-  */
+  client.print(F("\tUptime:\t\t\t"));
+  client.println(millis()); 
+  client.print(F("\tSoft version:\t\t"));
+  client.println(SOFT_VER);
+}
+void addCustomSend(EthernetClient& client)
+{
+  byte i;
+  client.println(F("   strText += \"&open_time=\";"));
+  for(i = 0; i < 4; ++i)
+  {
+    client.print(F("   strText += document.getElementById(\"txt_form\").fo"));client.print(i);client.print(F(".value;"));
+    if(i < 3)client.print(F("   strText += \",\";"));
+  }
+  client.println(F("   strText += \"&close_time=\";"));
+  for(i = 0; i < 4; ++i)
+  {
+    client.print(F("   strText += document.getElementById(\"txt_form\").fc"));client.print(i);client.print(F(".value;"));
+    if(i < 3)client.print(F("   strText += \",\";"));
+  }
+  client.println(F("   strText += \"&tilt_time=\";"));
+  for(i = 0; i < 4; ++i)
+  {
+    client.print(F("   strText += document.getElementById(\"txt_form\").ft"));client.print(i);client.print(F(".value;"));
+    if(i < 3)client.print(F("   strText += \",\";"));
+  }
 }
   
 static uint32_t maintainLastMillis = 0;
@@ -890,8 +996,8 @@ void loop()
   }
   
   handleMqttClient();
-  
-  HttpResult httpRes = httpHandle(ethServer, boardSettings.mqtt, httpReqHandler, httpRespBuilder);
+    
+  HttpResult httpRes = httpHandle2(ethServer, customHandlers);
   if(httpRes != HTTP_NO_ACTION)
   {
     EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);

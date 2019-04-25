@@ -11,7 +11,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER "1.2.0"
+#define SOFT_VER F("1.2.0")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -46,8 +46,8 @@ static const uint8_t MCP27008_ADRESS = 0x27;
 static struct StoredSettings{
   MqttSettings mqtt;
   // 0 - No timer, input toggles output
-  // >0 - If on will be off after x miliseconds
-  uint8_t      timer[NUM_IOS];
+  // >0 - If on will be off after x seconds
+  uint8_t      timers[NUM_IOS];
 } boardSettings;
 
 static const uint8_t TOPIC_ID_START_INDEX = 6;
@@ -138,7 +138,7 @@ void callback(char* topic, byte* payload, unsigned int length)
 
 void readInputsInterruptHandler()
 {
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     inputCounters[i] <<= 1;
     if(digitalRead(INPUT_PINS_START + i) == LOW)
@@ -174,7 +174,7 @@ void readInputsInterruptHandler()
     
     if(get_bit(inputsState, i) != get_bit(lastinputsState, i))
     {
-      if(boardSettings.timer[i] == 0)
+      if(boardSettings.timers[i] == 0)
       {
         if(get_bit(inputsState, i))
         {
@@ -183,7 +183,8 @@ void readInputsInterruptHandler()
       }
       else
       {  
-        outputsTimer[i] = boardSettings.timer[i] * 1000; // Convert to miliseconds
+        outputsTimer[i] = boardSettings.timers[i] * 1000; // Convert to miliseconds
+        setOutputState(i, true);
       }
     }
   }
@@ -209,7 +210,7 @@ void checkOutputsAndPublish(PubSubClient& client)
   if(currentOutputsStateToPublish == 0)
     return;
   
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     if(get_bit(currentOutputsStateToPublish, i))
     {
@@ -236,7 +237,7 @@ void checkInputsAndPublish(PubSubClient& client)
   if(currentInputsStateToPublish == 0)
     return;
   
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     if(get_bit(currentInputsStateToPublish, i))
     {
@@ -262,7 +263,7 @@ void setup()
   Serial.print(F("RELIO ver: "));
   Serial.println(SOFT_VER);
  
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     pinMode(INPUT_PINS_START + i, INPUT_PULLUP);      // sets the switch sensor digital pin as input
   }
@@ -281,7 +282,7 @@ void setup()
 
   getMacAddress(ds2401, mac);
   
-  for (uint8_t i = 0; i < 4; i++)
+  for (byte i = 0; i < 4; i++)
   {
     byteToHexStr(mac[i+2], outputCommandTopic + (TOPIC_ID_START_INDEX + i*2));
     byteToHexStr(mac[i+2], inputStateTopic + (TOPIC_ID_START_INDEX + i*2));
@@ -294,14 +295,14 @@ void setup()
   Serial.println(clientId);
   
   Serial.print(F("Timer: "));
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
-    Serial.print(boardSettings.timer[i]);
+    Serial.print(boardSettings.timers[i]);
     if(i+1 < NUM_IOS)Serial.print(F(", "));
     else Serial.println(F(""));
   }
   
-  for(uint8_t i = 0; i < 4; ++i)
+  for(byte i = 0; i < 4; ++i)
   {
     Serial.print(boardSettings.mqtt.mqtt_ip[i]);
     if(i < 3)Serial.print(F("."));
@@ -373,55 +374,80 @@ void handleMqttClient()
   }
 }
 
-bool httpReqHandler(char* data, uint16_t size)
+CustomHandlers customHandlers = 
 {
-  char *pch, *modeStr;
-  byte counter;
-  bool retVal = false;
-  modeStr = strstr(data, "timer=");
-  if(modeStr != NULL)
+  .customProcess = processCustomParams,
+  .customForms = addCustomForms,
+  .customSend = addCustomSend,
+  .mqtt_ptr = &boardSettings.mqtt
+};
+
+bool parseTimers(const char* reqStr, uint8_t* timersArray)
+{
+  int  iArray[8];
+  bool result = false;
+  char* strPtr = strstr(reqStr, "&timers=");
+  if(strPtr)
   {
-    counter = 0;
-    modeStr += 5;
-    Serial.print(F("timer: "));
-    pch = strtok (modeStr, ",.&");
-    while (pch != NULL && counter < 8)
+    strPtr += 7;
+    if(sscanf(strPtr, "=%d,%d,%d,%d,%d,%d,%d,%d&", iArray, iArray+1, iArray+2, iArray+3, iArray+4, iArray+5, iArray+6, iArray+7) == 8)
     {
-      if(!isdigit(pch[0]))
-      {
-        break;
-      }
-      Serial.print(pch);
-      if(counter < 7) Serial.print(F(","));
-      boardSettings.timer[counter] = atoi(pch);
-      // go to next token
-      pch = strtok (NULL, ",.&");
-      ++counter;
+      for(byte i = 0; i < 8; ++i)
+        timersArray[i] = iArray[i];
+        
+      result = true;
+    }
+  }
+  return result;
+}
+bool processCustomParams(const char* reqStr)
+{
+  bool result = false;
+  if(parseTimers(reqStr, boardSettings.timers))
+  {
+    Serial.print(F("Received: timers\t:"));
+    for(byte i = 0; i < 8; ++i)
+    {
+      Serial.print(boardSettings.timers[i]);
+      if(i<7)Serial.print(F(","));
     }
     Serial.println(F(""));
-    retVal = true;
+    result = true;
   }
-  return retVal;
+  return result;
 }
-void httpRespBuilder(EthernetClient& client)
+void addCustomForms(EthernetClient& client)
 {
-  client.print(F("Outputs timer: \t"));
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+  client.println(F("\n\tTimeout in seconds:"));
+  for(byte i = 0; i < 8; ++i)
   {
-    client.print(boardSettings.timer[i]);
-    if(i+1 < NUM_IOS)client.print(F(", "));
+    client.print(F("\t  Channel "));client.print(i+1);
+    client.print(F(" <input type=\"text\" name=\"ft"));client.print(i); client.print(F("\"  maxlength=3 size=3 value=\"")); 
+    client.print(boardSettings.timers[i]);
+    client.println(F("\">"));
   }
-  client.println(F("<BR>"));
-  
+
+  client.println(F(""));
   client.print(F("<H1>State:</H1>"));
-  client.print(F("Soft version: \t\t"));
-  client.println(SOFT_VER);
-  client.print(F("Subscription: \t\t"));
+  client.print(F("\tMQTT client id:\t\t"));
+  client.println(clientId);
+  client.print(F("\tMQTT subscription:\t"));
   client.println(outputCommandTopic);
-  client.print(F("MQTT connection state: \t"));
+  client.print(F("\tMQTT connection state:\t"));
   client.println(mqttClient.state());
-  client.print(F("Uptime: \t\t"));
+  client.print(F("\tUptime:\t\t\t"));
   client.println(millis()); 
+  client.print(F("\tSoft version:\t\t"));
+  client.println(SOFT_VER);
+}
+void addCustomSend(EthernetClient& client)
+{
+  client.println(F("   strText += \"&timers=\";"));
+  for(byte i = 0; i < 8; ++i)
+  {
+    client.print(F("   strText += document.getElementById(\"txt_form\").ft"));client.print(i);client.print(F(".value;"));
+    if(i < 7)client.print(F("   strText += \",\";"));
+  }
 }
 
 static uint32_t maintainLastMillis = 0;
@@ -451,8 +477,8 @@ void loop()
   }
   
   handleMqttClient();
-  
-  HttpResult httpRes = httpHandle(ethServer, boardSettings.mqtt, httpReqHandler, httpRespBuilder);
+
+  HttpResult httpRes = httpHandle2(ethServer, customHandlers);
   if(httpRes != HTTP_NO_ACTION)
   {
     EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);
@@ -464,5 +490,6 @@ void loop()
       Serial.println(F("MQTT disconnected"));
     }
   }
+  
 }
 
