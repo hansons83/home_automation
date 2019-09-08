@@ -10,7 +10,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER F("1.2.0")
+#define SOFT_VER F("1.2.1")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -51,8 +51,8 @@ static struct StoredSettings{
 
 static const uint8_t TOPIC_ID_START_INDEX = 6;
 
-static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 27;
-char outputCommandTopic[]     = { "LEDIO/\0\0\0\0\0\0\0\0/command/out/+\0" };
+static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 23;
+char outputCommandTopic[]     = { "LEDIO/\0\0\0\0\0\0\0\0/cmd/out/+\0" };
 
 static const uint8_t TOPIC_IN_STATE_CHANNEL_INDEX = 24;
 char inputStateTopic[]  = { "LEDIO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
@@ -476,14 +476,14 @@ void setup()
   digitalWrite(A0, HIGH);
 
   mqttClient.setCallback(callback);
-  Serial.print(F("Ethernet: "));
   //Ethernet.begin(mac, IPAddress(192, 168, 1, 6), IPAddress(255, 255, 255, 0), IPAddress(192, 168, 1, 254));
   while(!Ethernet.begin(mac))
   {
-    delay(5000);
+    delay(1000);
   }
   ethServer.begin();
 
+  Serial.print(F("Ethernet: "));
   Serial.println(Ethernet.localIP()); 
   //Serial.println(Ethernet.subnetMask());
   //Serial.println(Ethernet.gatewayIP());
@@ -505,21 +505,21 @@ void handleMqttClient()
       Serial.print(F("MQTT connecting..."));
       if (mqttClient.connect(clientId, boardSettings.mqtt.mqtt_username, boardSettings.mqtt.mqtt_password))
       {
-        Serial.print(F(" Connected, sub= "));
+        Serial.print(F(" sub= "));
         Serial.println(outputCommandTopic);
         mqttClient.subscribe(outputCommandTopic);
       }
       else
       {
-        Serial.print(F(" Disconnected, err="));
+        Serial.print(F(" err= "));
         Serial.println(mqttClient.state());
       }
     }
   }
   else
   {
-    checkOutputsAndPublish(mqttClient);
     checkInputsAndPublish(mqttClient);
+    checkOutputsAndPublish(mqttClient);
     mqttClient.loop();
   }
 }
@@ -528,42 +528,49 @@ CustomHandlers customHandlers =
 {
   .customProcess = processCustomParams,
   .customForms = addCustomForms,
-  .customSend = addCustomSend,
   .mqtt_ptr = &boardSettings.mqtt
 };
 
 bool parseFadeTime(const char* reqStr, uint16_t* timersArray)
 {
-  int  iArray[8];
+  int  iArray;
   bool result = false;
-  char* strPtr = strstr(reqStr, "&fade_time=");
-  if(strPtr)
+  char formName[] = { "&f =\0" };
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
-    strPtr += 10;
-    if(sscanf(strPtr, "=%d,%d,%d,%d,%d,%d,%d,%d&", iArray, iArray+1, iArray+2, iArray+3, iArray+4, iArray+5, iArray+6, iArray+7) == 8)
+    formName[2] =  i + '1';
+    char* strPtr = strstr(reqStr, formName);
+    if(strPtr)
     {
-      for(byte i = 0; i < 8; ++i)
-        timersArray[i] = iArray[i];
-        
-      result = true;
+      strPtr += 3;
+      if(sscanf(strPtr, "=%d&", &iArray) == 1)
+      {
+        timersArray[i] = iArray;
+          
+        result = true;
+      }
     }
   }
   return result;
 }
 bool parseBright(const char* reqStr, uint8_t* timersArray)
 {
-  int  iArray[8];
+  int  iArray;
   bool result = false;
-  char* strPtr = strstr(reqStr, "&bright=");
-  if(strPtr)
+  char formName[] = { "&b =\0" };
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
-    strPtr += 7;
-    if(sscanf(strPtr, "=%d,%d,%d,%d,%d,%d,%d,%d&", iArray, iArray+1, iArray+2, iArray+3, iArray+4, iArray+5, iArray+6, iArray+7) == 8)
+    formName[2] =  i + '1';
+    char* strPtr = strstr(reqStr, formName);
+    if(strPtr)
     {
-      for(byte i = 0; i < 8; ++i)
-        timersArray[i] = iArray[i];
-        
-      result = true;
+      strPtr += 3;
+      if(sscanf(strPtr, "=%d&", &iArray) == 1)
+      {
+        timersArray[i] = iArray;
+          
+        result = true;
+      }
     }
   }
   return result;
@@ -597,14 +604,14 @@ bool processCustomParams(const char* reqStr)
 }
 void addCustomForms(EthernetClient& client)
 {
-  client.println(F("\n\t\tFade time(ms)\t\t On bright (%)"));
-  for(byte i = 0; i < 8; ++i)
+  client.println(F("\n\t\tFade time(ms)\t\t On brightness (%)"));
+  for(byte i = 0; i < NUM_IOS; ++i)
   {
     client.print(F("  Channel "));client.print(i+1);
-    client.print(F("\t<input type=\"text\" name=\"ff"));client.print(i); client.print(F("\"  maxlength=5 size=5 value=\"")); 
+    client.print(F("\t<input type=\"text\" name=\"f"));client.print(i+1); client.print(F("\"  maxlength=5 size=5 value=\"")); 
     client.print(boardSettings.fade_time[i]);
     client.print(F("\">"));
-    client.print(F("\t\t<input type=\"text\" name=\"fb"));client.print(i); client.print(F("\"  maxlength=3 size=3 value=\"")); 
+    client.print(F("\t\t<input type=\"text\" name=\"b"));client.print(i+1); client.print(F("\"  maxlength=3 size=3 value=\"")); 
     client.print(boardSettings.bright[i]);
     client.println(F("\">"));
   }
@@ -621,21 +628,6 @@ void addCustomForms(EthernetClient& client)
   client.println(millis()); 
   client.print(F("\tSoft version:\t\t"));
   client.println(SOFT_VER);
-}
-void addCustomSend(EthernetClient& client)
-{
-  client.println(F("   strText += \"&fade_time=\";"));
-  for(byte i = 0; i < 8; ++i)
-  {
-    client.print(F("   strText += document.getElementById(\"txt_form\").ff"));client.print(i);client.print(F(".value;"));
-    if(i < 7)client.print(F("   strText += \",\";"));
-  }
-  client.println(F("   strText += \"&bright=\";"));
-  for(byte i = 0; i < 8; ++i)
-  {
-    client.print(F("   strText += document.getElementById(\"txt_form\").fb"));client.print(i);client.print(F(".value;"));
-    if(i < 7)client.print(F("   strText += \",\";"));
-  }
 }
 
 static unsigned long maintainLastMillis = 0;
@@ -666,7 +658,7 @@ void loop()
   
   handleMqttClient();
   
-  HttpResult httpRes = httpHandle2(ethServer, customHandlers);
+  HttpResult httpRes = httpHandle2(ethServer, customHandlers, Ethernet.localIP());
   if(httpRes != HTTP_NO_ACTION)
   {
     EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);

@@ -2,6 +2,7 @@
 /*
  Basic MQTT example
 */
+//#define COVERIO_DEBUG_MODE
 
 #include <SPI.h>
 //#include <Wire.h>
@@ -11,18 +12,33 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER F("1.2.0")
+
+#define SOFT_VER F("1.2.1")
+
+#ifdef COVERIO_DEBUG_MODE
+#define SerialPrint(x) Serial.print(x)
+#define SerialPrintLn(x) Serial.println(x)
+#define SerialPrintBin(x) Serial.print(x, BIN)
+#define SerialPrintLnBin(x) Serial.println(x, BIN)
+#else
+#define SerialPrint(x)
+#define SerialPrintLn(x)
+#define SerialPrintBin(x)
+#define SerialPrintLnBin(x)
+#endif
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
 #define SCL_PORT PORTC
 #define SCL_PIN 5
 
+#define I2C_HARDWARE 1
 #define I2C_TIMEOUT 100
 #define I2C_FASTMODE 1
+//#define I2C_SLOWMODE 1
 
 #include <utils.hpp>
-#define HTTP_REQ_BUF_SZ 220
+#define HTTP_REQ_BUF_SZ 180
 #include <http_server.hpp>
 
 SoftWire       sWire = SoftWire();
@@ -33,7 +49,7 @@ OneWire        ds2401(A1);
 
 #define EEPROM_VERSION_OFFSET  0
 #define EEPROM_SETTINGS_OFFSET 1
-#define EEPROM_VERSION         0x55
+#define EEPROM_VERSION         0x53
 
 #define ETH_SHIELD_RESET_PIN   A0
 
@@ -43,28 +59,50 @@ static const uint8_t INPUT_LOW_STATE = 0x00;
 static const uint8_t INPUT_PINS_START = 2;
 static const uint8_t MCP27008_ADRESS = 0x27;
 static const uint8_t PCF8591_ADRESS = 0x48;
+static const uint8_t ATTINY_ADDRESS = 0x22;
 
-static struct StoredSettings{
+static struct StoredSettings {
   MqttSettings mqtt;
-  uint32_t     open_time[4];  // open time in miliseconds
-  uint32_t     close_time[4]; // close time in miliseconds
-  uint32_t     tilt_time[4];  // tilt time in miliseconds
+  uint32_t     open_time[4];    // open time in miliseconds
+  uint32_t     close_time[4];   // close time in miliseconds
+  uint32_t     tilt_time[4];    // tilt time in miliseconds
+  uint32_t     long_press_time; // Long press time in ms.
 } boardSettings;
 
 static const uint8_t TOPIC_ID_START_INDEX = 8;
 
-static const uint8_t TOPIC_POS_CMD_CHANNEL_INDEX = 35;
-char posCommandTopic[]   = { "COVERIO/\0\0\0\0\0\0\0\0/command/position/+\0" };
+static const uint8_t TOPIC_CMD_INDEX = 17;
+char commandTopic[TOPIC_CMD_INDEX+15] = { "COVERIO/\0\0\0\0\0\0\0\0/\0" };
+#define TOPIC_CMD_POS_INDEX
+const char* cmdPosSubtopic      = { "cmd/pos/\0" };
+const char* cmdTiltSubtopic     = { "cmd/tilt/\0" };
+const char* cmdCalibSubtopic    = { "cmd/calib/\0" };
+const char* statePosSubtopic    = { "state/pos/ \0" };
+const char* stateTiltSubtopic   = { "state/tilt/ \0" };
+const char* subscribeSubtopic   = { "+/+/+\0" };
 
-static const uint8_t TOPIC_TILT_CMD_CHANNEL_INDEX = 30;
-char tiltCommandTopic[]  = { "COVERIO/\0\0\0\0\0\0\0\0/command/tilt/+\0" };
+const char* getTopic(const char* subTopic)
+{
+  strcpy(commandTopic+TOPIC_CMD_INDEX, subTopic);
+  return commandTopic;
+}
 
-static const uint8_t TOPIC_POS_STATE_CHANNEL_INDEX = 32;
-char posStateTopic[]     = { "COVERIO/\0\0\0\0\0\0\0\0/state/position/ \0" };
+/*
+static const uint8_t TOPIC_POS_CMD_CHANNEL_INDEX = 25;
+char posCommandTopic[]   = { "COVERIO/\0\0\0\0\0\0\0\0/cmd/pos/+\0" };
+
+static const uint8_t TOPIC_TILT_CMD_CHANNEL_INDEX = 26;
+char tiltCommandTopic[]  = { "COVERIO/\0\0\0\0\0\0\0\0/cmd/tilt/+\0" };
+
+static const uint8_t TOPIC_CALIB_CMD_CHANNEL_INDEX = 27;
+char calibCommandTopic[] = { "COVERIO/\0\0\0\0\0\0\0\0/cmd/calib/+\0" };
+
+static const uint8_t TOPIC_POS_STATE_CHANNEL_INDEX = 27;
+char posStateTopic[]     = { "COVERIO/\0\0\0\0\0\0\0\0/state/pos/ \0" };
 
 static const uint8_t TOPIC_TILT_STATE_CHANNEL_INDEX = 28;
-char tiltStateTopic[]    = { "COVERIO/\0\0\0\0\0\0\0\0/state/tilt/ \0"  };
-
+char tiltStateTopic[]    = { "COVERIO/\0\0\0\0\0\0\0\0/state/tilt/ \0" };
+*/
 char clientId[]          = { "COVERIO_\0\0\0\0\0\0\0\0\0" };
 
 // Update these with values suitable for your network.
@@ -72,83 +110,174 @@ byte mac[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
 static  uint8_t  inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  byte     inputsState = 0;
-static  byte     inputsStateToPublish = 0;
-static  uint32_t lastinputsChange[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
+//static  byte     inputsStateToPublish = 0;
+static  uint32_t lastinputsReleased[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
+static  uint32_t lastinputsPressed[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  byte     lastinputsState = 0;
+static  volatile byte requestedPos[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
+static  volatile byte requestedTilt[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
+static  volatile bool requestedCalibration[4] = { false, false, false, false };
 
+#define PUBLISH_POS_FLAG  0x01
+#define PUBLISH_TILT_FLAG 0x02
+#define PUBLISH_ALL_FLAG  0x03
+static  volatile byte publishFlag = 0;
+/*
 static const int8_t   MOVING_UP = -1;
 static const int8_t   MOVING_DOWN = 1;
 static const int8_t   MOVING_STOP = 1;
-
+*/
 static const int   MOVE_RANGE = 100;
 
-static  int8_t outputsDir[] = { 0, 0, 0, 0 };
-static  int blindsPos[] = { 0, 0, 0, 0 };
-static  int blindsTiltPos[] = { 0, 0, 0, 0 };
+#define BIT_UP(ch) ((chInd)*2+1)
+#define BIT_DOWN(ch) ((chInd)*2)
 
-static  int8_t outputsExpectedPos[] = { 0, 0, 0, 0 };
-static  int8_t outputsExpectedTilt[] = { 0, 0, 0, 0 };
+//static  int8_t outputsDir[] = { 0, 0, 0, 0 };
+//static  int blindsPos[] = { 0, 0, 0, 0 };
+//static  int blindsTiltPos[] = { 0, 0, 0, 0 };
+
+//static  int8_t outputsExpectedPos[] = { 0, 0, 0, 0 };
+//static  int8_t outputsExpectedTilt[] = { 0, 0, 0, 0 };
 
 static  uint8_t outputsState = 0;
-static  byte    outputsStateToPublish = 0;
+//static  byte    outputsStateToPublish = 0;
 
 #define STATE_MACHINE_STEP_TIME 2
 
-enum ChannelState
-{
-  CHANNEL_ENTER_IDLE,
-  CHANNEL_MONITOR_IDLE,
-  CHANNEL_ENTER_POS,
-  CHANNEL_MONITOR_POS,
-  CHANNEL_ENTER_TILT,
-  CHANNEL_MONITOR_TILT,
-};
+#define CHANNEL_ENTER_IDLE      0
+#define CHANNEL_MONITOR_IDLE    1
+#define CHANNEL_ENTER_POS       2
+#define CHANNEL_MONITOR_POS     3
+#define CHANNEL_ENTER_TILT      4
+#define CHANNEL_MONITOR_TILT    5
+#define CHANNEL_ENTER_CALIBRATE 6
 
-enum ChannelDir
-{
-  ChannelDir_None = 0,
-  ChannelDir_Up = 1,
-  ChannelDir_Down = 2
-};
+
+static const byte ChannelDir_None = 0;
+static const byte ChannelDir_Down = 1;
+static const byte ChannelDir_Up = 2;
+
 
 const char* stateNames[] = 
 {
-  "E_IDLE",
-  "M_IDLE",
-  "E_POS",
-  "M_POS",
-  "E_TILT",
-  "M_TILT",
+  "EI",
+  "MI",
+  "EP",
+  "MP",
+  "ET",
+  "MT",
+  "EC"
 };
 
-struct BlindState;
-typedef void (*blindStateHandler)(uint8_t chInd, BlindState& state);
-struct BlindState
+static int8_t    currentTilt[4];
+static int8_t    currentPos[4];
+
+static int8_t    expectedPos[4];
+static int8_t    expectedTilt[4];
+
+static uint16_t  tilt_time[4];
+static uint16_t  move_time[4];
+static uint32_t  stateEnterMs[4];
+
+static int8_t    movePosDiff[4];
+static int8_t    stateEnterPos[4];
+static int8_t    stateEnterTilt[4];
+static byte      currentState[4];
+
+static byte      currentLevel[4];
+
+static byte      calibrationStep[4] = {0, 0, 0, 0};
+static uint16_t  calibrationCounter[4] = {0, 0, 0, 0};
+static uint32_t  calibrationTimestamp[4] = {0, 0, 0, 0};
+static byte      stopRequested[4] = { false, false, false, false};
+
+static  bool     monitorCurrent = 0;
+
+/*
+ * 
+ */
+void startMonitorCurrentLevel()
 {
-  bool   stopRequested;
-  
-  int8_t currentTilt;
-  int8_t currentPos;
+  monitorCurrent = true;
+}
+/*
+ * 
+ */
+void stopMonitorCurrentLevel()
+{
+  monitorCurrent = false;
+}
+/*
+ * 
+ */
+void updateCurrentLevel()
+{
+  static uint32_t lastCheck = 0;
 
-  int8_t expectedPos;
-  int8_t expectedTilt;
-  
-  int32_t tilt_time;
-  int32_t move_time;
+  if(!monitorCurrent)
+    return;
+    
+  const uint32_t millisNow = millis();
 
-  uint32_t          stateEnterMs;
-  ChannelState      currentState;
+  if(calcTimestampDiff(lastCheck, millisNow) < 50)
+  {
+    return;
+  }
+  lastCheck = millisNow;
   
-} blindStateArray[4];
+  sWire.requestFrom(ATTINY_ADDRESS, (uint8_t)4);
+  while(sWire.available() < 4)
+  {
+  }
+ 
+  for(byte byteNr = 0; byteNr < 4; ++byteNr)
+  {
+    currentLevel[byteNr] = (byte)sWire.read();
+  }
+}
+/*
+ * 
+ */
+void printStats(byte i)
+{
+#ifdef COVERIO_DEBUG_MODE
+  static uint16_t counter[4];
+  ++counter[i];
+  if(counter[i] < 256)
+    return;
+  counter[i] = 0;
 
-void setChannelMoveDir(uint8_t chInd, ChannelDir dir)
+  //for(byte i = 0; i < 4; ++i)
+  {
+    SerialPrint("CH:");
+    SerialPrint(i);
+    SerialPrint(F(",C:"));
+    SerialPrint(blindStateArray[i].currentLevel);
+    SerialPrint(F(",P:"));
+    SerialPrint(blindStateArray[i].currentPos);
+    SerialPrint(F(",T:"));
+    SerialPrintLn(blindStateArray[i].currentTilt);
+  }
+#endif
+}
+/*
+ * 
+ */
+void setChannelPublishFlag(uint8_t chInd, byte flag)
+{
+  publishFlag = publishFlag | (flag << chInd);
+}
+/*
+ * 
+ */
+void setChannelMoveDir(uint8_t chInd, byte dir)
 {
   byte expectedtState = outputsState;
 
   expectedtState = (expectedtState & ~(0x03 << chInd)) | (dir << chInd);
 
-  Serial.print(F("O: "));
-  Serial.println(expectedtState, BIN);
+  SerialPrint(F("O:"));
+  SerialPrintLnBin(expectedtState);
   if(outputsState != expectedtState)
   {
     outputsState = expectedtState;
@@ -156,86 +285,136 @@ void setChannelMoveDir(uint8_t chInd, ChannelDir dir)
     MCP27008_write(sWire, MCP27008_ADRESS, outputsState);
   }
 }
-
-//void setOutputState(int index, bool state);
-
+byte getChannelMoveDir(uint8_t chInd)
+{
+  return ((outputsState >> chInd) & 0x03);
+}
+/*
+ * 
+ */
 bool upButtonPressed(uint8_t chInd)
 {
     // Check if button was presed
-  if(get_bit(inputsState, chInd*2) != get_bit(lastinputsState, chInd*2))
+  if(get_bit(inputsState, BIT_UP(chInd)) && 
+        get_bit(inputsState, BIT_UP(chInd)) != get_bit(lastinputsState, BIT_UP(chInd)))
   {
-    if(get_bit(inputsState, chInd*2))
-    {
-       return true;
-    }
+    return true;
   }
   return false;
 }
+/*
+ * 
+ */
 bool downButtonPressed(uint8_t chInd)
 {
     // Check if button was presed
-  if(get_bit(inputsState, chInd*2+1) != get_bit(lastinputsState, chInd*2+1))
+  if(get_bit(inputsState, BIT_DOWN(chInd)) &&
+      get_bit(inputsState, BIT_DOWN(chInd)) != get_bit(lastinputsState, BIT_DOWN(chInd)))
   {
-    if(get_bit(inputsState, chInd*2+1))
-    {
-       return true;
-    }
+     return true;
   }
   return false;
 }
+/*
+ * 
+ */
 bool upButtonReleased(uint8_t chInd)
 {
     // Check if any button was presed
-  if(get_bit(inputsState, chInd*2) != get_bit(lastinputsState, chInd*2))
+  if(!get_bit(inputsState, BIT_UP(chInd)) && 
+        get_bit(inputsState, BIT_UP(chInd)) != get_bit(lastinputsState, BIT_UP(chInd)))
   {
-    if(!get_bit(inputsState, chInd*2))
-    {
-       return true;
-    }
+    return true;
   }
   return false;
 }
+/*
+ * 
+ */
 bool downButtonReleased(uint8_t chInd)
 {
     // Check if any button was presed
-  if(get_bit(inputsState, chInd*2+1) != get_bit(lastinputsState, chInd*2+1))
+  if(!get_bit(inputsState, BIT_DOWN(chInd)) && 
+        get_bit(inputsState, BIT_DOWN(chInd)) != get_bit(lastinputsState, BIT_DOWN(chInd)))
   {
-    if(!get_bit(inputsState, chInd*2+1))
-    {
-       return true;
-    }
+    return true;
   }
   return false;
 }
-
-#define enterState(chInd, expectedState) \
-{ \
-    if(blindStateArray[chInd].currentState != expectedState) \
-    { \
-      { \
-        Serial.print(F("Blind: ")); \
-        Serial.print(chInd); \
-        Serial.print(F(", new state: ")); \
-        Serial.println(stateNames[expectedState]); \
-      } \
-      blindStateArray[chInd].stateEnterMs = millis(); \
-      blindStateArray[chInd].currentState = expectedState; \
-    } \
-} while(0)
-
-int32_t calcMoveTime()
+/*
+ * 
+ */
+bool calibPressed(uint8_t chInd)
 {
-  
-}
-void sendPos(uint8_t chInd)
-{
-//  publishMsg(, posStateTopic, );
-}
-void sendTilt(uint8_t chInd)
-{
-//  publishMsg(, tiltStateTopic, );
-}
+  // Check if button is presed
+  if(!get_bit(inputsState, BIT_DOWN(chInd)) || !get_bit(inputsState, BIT_UP(chInd)))
+  {
+     return false;
+  }
+  const uint32_t millisNow = millis();
 
+  if(calcTimestampDiff(lastinputsPressed[BIT_UP(chInd)], millisNow) >= 2000
+      && calcTimestampDiff(lastinputsPressed[BIT_DOWN(chInd)], millisNow) >= 2000)
+  {
+     return true;
+  }
+  return false;
+}
+/*
+ * 
+ */
+bool upButtonLongPressed(uint8_t chInd)
+{
+  // Check if button is presed
+  if(!get_bit(inputsState, BIT_UP(chInd)) || get_bit(inputsState, BIT_DOWN(chInd)))
+  {
+     return false;
+  }
+  const uint32_t millisNow = millis();
+
+  if(calcTimestampDiff(lastinputsPressed[BIT_UP(chInd)], millisNow) >= boardSettings.long_press_time)
+  {
+     return true;
+  }
+  return false;
+}
+/*
+ * 
+ */
+bool downButtonLongPressed(uint8_t chInd)
+{
+  // Check if button is presed
+  if(!get_bit(inputsState, BIT_DOWN(chInd)) || get_bit(inputsState, BIT_UP(chInd)))
+  {
+     return false;
+  }
+  const uint32_t millisNow = millis();
+
+  if(calcTimestampDiff(lastinputsPressed[BIT_DOWN(chInd)], millisNow) < boardSettings.long_press_time)
+  {
+     return false;
+  }
+  return true;
+}
+/*
+ * 
+ */
+void enterState(byte chInd, byte expectedState)
+{
+    if(currentState[chInd] == expectedState)
+    {
+      return;
+    }
+    Serial.print(F("CH:"));
+    Serial.print(chInd);
+    Serial.print(F(" NS:"));
+    Serial.println(stateNames[expectedState]);
+    
+    stateEnterPos[chInd] = currentPos[chInd];
+    stateEnterTilt[chInd] = currentTilt[chInd];
+    stateEnterMs[chInd] = millis();
+    currentState[chInd] = expectedState;
+}
 // Nacisniecie gora < 3 sec - Jesli tilt != 0 ustaw expected tilt na current tilt - 25, rozpocznij tilt.
 // Nacisniecie góra > 3 sec - Ustaw expected pos na 0, rozpocznij podnoszenie
 // Puszczenie góra - Jeśli w monitorowanie tilt zatrzymaj.
@@ -248,69 +427,114 @@ void sendTilt(uint8_t chInd)
 /**
  * Wejście do stany bezczynności
  */
-void idleEnter(uint8_t chInd, uint8_t elapsedMs)
+void idleEnter(uint8_t chInd)
 {
-  BlindState& state = blindStateArray[chInd];
+  SerialPrint(F("CH:")); SerialPrint(chInd);
+  SerialPrint(F(",P:")); SerialPrint(currentPos[chInd]);
+  SerialPrint(F(",T:")); SerialPrintLn(currentTilt[chInd]);
   
-  Serial.print(F("Blind: ")); Serial.print(chInd);
-  Serial.print(F(", Pos: ")); Serial.print(state.currentPos);
-  Serial.print(F(", Tilt: ")); Serial.println(state.currentTilt);
-
-  sendPos(chInd);
-  sendTilt(chInd);
   setChannelMoveDir(chInd, ChannelDir_None);
-  state.stopRequested = false;
+  setChannelPublishFlag(chInd, PUBLISH_ALL_FLAG);
+  stopRequested[chInd] = false;
+  stopMonitorCurrentLevel();
   enterState(chInd, CHANNEL_MONITOR_IDLE);
 }
 /*
  * Monitorowanie stanu bezczynności
  */
-void idleMonitor(uint8_t chInd, uint8_t elapsedMs)
+void idleMonitor(uint8_t chInd)
 {
-  BlindState& state = blindStateArray[chInd];
   // Do nothing if we are not at least 1000ms in idle.
-  if(calcTimestampDiff(state.stateEnterMs, millis()) < 1000)
+  if(calcTimestampDiff(stateEnterMs[chInd], millis()) < 1000)
   {
     return;
   }
-  if(upButtonPressed(chInd))
+  if(requestedCalibration[chInd] || calibPressed(chInd))
   {
-    Serial.print(F("Blind up: ")); Serial.println(chInd);
-    state.expectedPos = 0;
+    requestedCalibration[chInd] = false;
+    SerialPrint(F("B cal:")); SerialPrintLn(chInd); 
+    enterState(chInd, CHANNEL_ENTER_CALIBRATE);
+  }
+  else if(requestedPos[chInd] >= 0 && requestedPos[chInd] <= 100)
+  {
+    expectedPos[chInd] = requestedPos[chInd];
+    requestedPos[chInd] = 0xFF;
+    enterState(chInd, CHANNEL_ENTER_POS);
+  }
+  else if(requestedTilt[chInd] >= 0 && requestedTilt[chInd] <= 100)
+  {
+    expectedTilt[chInd] = requestedTilt[chInd];
+    requestedTilt[chInd] = 0xFF;
+    enterState(chInd, CHANNEL_ENTER_TILT); 
+  }
+  else if(upButtonLongPressed(chInd))
+  {
+    SerialPrint(F("Bt up:")); SerialPrintLn(chInd);
+    expectedPos[chInd] = 0;
+    enterState(chInd, CHANNEL_ENTER_POS);
+  }
+  else if(downButtonLongPressed(chInd))
+  {
+    SerialPrint(F("Bt down:")); SerialPrintLn(chInd);
+    expectedPos[chInd] = 100;
     enterState(chInd, CHANNEL_ENTER_POS); 
   }
-  else if(downButtonPressed(chInd))
+  else if(upButtonReleased(chInd))
   {
-    Serial.print(F("Blind down: ")); Serial.println(chInd);
-    state.expectedPos = 100;
-    enterState(chInd, CHANNEL_ENTER_POS); 
+    SerialPrint(F("Bt Tup:")); SerialPrintLn(chInd);
+    expectedTilt[chInd] = currentTilt[chInd] - 20;
+    if(expectedTilt[chInd] > 100)
+      expectedTilt[chInd] = 100;
+    enterState(chInd, CHANNEL_ENTER_TILT); 
+  }
+  else if(downButtonReleased(chInd))
+  {
+    SerialPrintLn(F("Bt Tdown:")); SerialPrintLn(chInd);
+    expectedTilt[chInd] = currentTilt[chInd] + 20;
+    if(expectedTilt[chInd] < 0)
+      expectedTilt[chInd] = 0;
+    enterState(chInd, CHANNEL_ENTER_TILT); 
   }
 }
 /*
  * Wejscie w stan zmiany pozycji
  */
-void posEnter(uint8_t chInd, uint8_t elapsedMs)
+void posEnter(uint8_t chInd)
 {
-  BlindState& state = blindStateArray[chInd];
-  
-  state.move_time =  ((int32_t)boardSettings.open_time[chInd] * 
-    abs(state.currentPos - state.expectedPos)) / (int32_t)100;
-    
-  if(state.expectedPos < state.currentPos)
+  byte posDiff = movePosDiff[chInd] = currentPos[chInd] - expectedPos[chInd];
+
+  if(expectedPos[chInd] < 0 || expectedPos[chInd] > 100 || posDiff == 0)
   {
-    if(state.currentTilt != 0)
+    enterState(chInd, CHANNEL_ENTER_IDLE);
+    return;
+  }
+
+  if(posDiff > 0)
+  {
+    move_time[chInd] = ((uint32_t)(boardSettings.open_time[chInd]-boardSettings.tilt_time[chInd]) * 
+                                                                        abs(posDiff)) / (uint32_t)100;
+  }
+  else
+  {
+    move_time[chInd] = ((uint32_t)(boardSettings.close_time[chInd]-boardSettings.tilt_time[chInd]) * 
+                                                                        abs(posDiff)) / (uint32_t)100;
+  }
+    
+  if(expectedPos[chInd] < currentPos[chInd])
+  {
+    if(currentTilt[chInd] != 0)
     {
-      state.expectedTilt = 0;
+      expectedTilt[chInd] = 0;
       enterState(chInd, CHANNEL_ENTER_TILT);
       return;
     }
     setChannelMoveDir(chInd, ChannelDir_Up);
   }
-  else if(state.expectedPos > state.currentPos)
+  else if(expectedPos[chInd] > currentPos[chInd])
   {
-    if(state.currentTilt != 100)
+    if(currentTilt[chInd] != 100)
     {
-      state.expectedTilt = 100;
+      expectedTilt[chInd] = 100;
       enterState(chInd, CHANNEL_ENTER_TILT);
       return;
     }
@@ -321,28 +545,49 @@ void posEnter(uint8_t chInd, uint8_t elapsedMs)
     enterState(chInd, CHANNEL_ENTER_IDLE);
     return;
   }
-  Serial.print(F("Move time: ")); Serial.println(state.move_time);
+  startMonitorCurrentLevel();
+  SerialPrint(F("Mt:")); SerialPrintLn(move_time[chInd]);
+  SerialPrint(F("Pos")); SerialPrintLn(stateEnterPos[chInd]);
   enterState(chInd, CHANNEL_MONITOR_POS);
 }
 /*
  * Monitorowanie stanu zmiany pozycji
  */
-void posMonitor(uint8_t chInd, uint8_t elapsedMs)
+void posMonitor(uint8_t chInd)
 {
-  BlindState& state = blindStateArray[chInd];
-  /*if(upButtonPressed(chInd) || downButtonPressed(chInd) || state.stopRequested)
+  if(upButtonPressed(chInd) || downButtonPressed(chInd) || stopRequested[chInd])
   {
+    SerialPrintLn(F("FS"));
     enterState(chInd, CHANNEL_ENTER_IDLE);
     return;
-  }*/
-  
-  state.move_time -= STATE_MACHINE_STEP_TIME;
-  if(state.move_time <= 0 )
+  }
+  int32_t stateTime = calcTimestampDiff(stateEnterMs[chInd], millis());
+  bool    noCurrent = stateTime > 100 && currentLevel[chInd] < 15;
+  if(stateTime >= move_time[chInd] || noCurrent)
   {
-    state.currentPos = state.expectedPos;
-    state.move_time = 0;
+    if(noCurrent)
+    { 
+      if(ChannelDir_Down == getChannelMoveDir(chInd))
+      {
+        currentPos[chInd] = 100;
+        currentTilt[chInd] = 100;
+        SerialPrintLn(F("PM:D"));
+      }
+      else
+      {
+        currentPos[chInd] = 0;
+        currentTilt[chInd] = 0;
+        SerialPrintLn(F("PM:U"));
+      }
+    }
+    else
+    {
+      currentPos[chInd] = expectedPos[chInd];
+      SerialPrintLn(F("PM:P"));
+    }
+    move_time[chInd] = 0;
     
-    if(state.currentTilt != state.expectedTilt)
+    if(currentTilt[chInd] != expectedTilt[chInd])
     {
       enterState(chInd, CHANNEL_ENTER_TILT);
     }
@@ -351,22 +596,40 @@ void posMonitor(uint8_t chInd, uint8_t elapsedMs)
       enterState(chInd, CHANNEL_ENTER_IDLE);
     }
   }
+  else
+  {
+    currentPos[chInd] = stateEnterPos[chInd] + (expectedPos[chInd] - (int32_t)stateEnterPos[chInd]) * 
+                          (stateTime*100u / move_time[chInd]) / 100u;
+    if(currentPos[chInd] > 100)
+      currentPos[chInd] = 100;
+    else if(currentPos[chInd] < 0)
+      currentPos[chInd] = 0;
+
+    setChannelPublishFlag(chInd, PUBLISH_POS_FLAG);
+  }
+  printStats(chInd);
 }
 /*
  * Wejscie do stanu zmiany kąta lameli
  */
-void tiltEnter(uint8_t chInd, uint8_t elapsedMs)
+void tiltEnter(uint8_t chInd)
 {
-  BlindState& state = blindStateArray[chInd];
+  byte tiltDiff = currentTilt[chInd] - expectedTilt[chInd];
+
+  if(expectedTilt[chInd] < 0 || expectedTilt[chInd] > 100 || tiltDiff == 0)
+  {
+    enterState(chInd, CHANNEL_ENTER_IDLE);
+    return;
+  }
   
-  state.tilt_time = ((int32_t)boardSettings.tilt_time[chInd] * 
-  abs(state.currentTilt - state.expectedTilt)) / (int32_t)100;
+  tilt_time[chInd] = ((uint32_t)boardSettings.tilt_time[chInd] * 
+                      abs(tiltDiff)) / (uint32_t)100;
     
-  if(state.expectedTilt < state.currentTilt)
+  if(expectedTilt[chInd] >= 0 && expectedTilt[chInd] < currentTilt[chInd])
   {
     setChannelMoveDir(chInd, ChannelDir_Up);
   }
-  else if(state.expectedTilt > state.currentTilt)
+  else if(expectedTilt[chInd] <= 100 && expectedTilt[chInd] > currentTilt[chInd])
   {
     setChannelMoveDir(chInd, ChannelDir_Down);
   }
@@ -375,29 +638,29 @@ void tiltEnter(uint8_t chInd, uint8_t elapsedMs)
     enterState(chInd, CHANNEL_ENTER_IDLE);
     return;
   }
-  Serial.print(F("Tilt time: ")); Serial.println(state.tilt_time);
+  startMonitorCurrentLevel();
+  SerialPrint(F("Tt:")); SerialPrintLn(tilt_time[chInd]);
   enterState(chInd, CHANNEL_MONITOR_TILT);
 }
 /*
  * Monitorowanie stanu zmiany kąta lameli
  */
-void tiltMonitor(uint8_t chInd, uint8_t elapsedMs)
+void tiltMonitor(uint8_t chInd)
 {
-  BlindState& state = blindStateArray[chInd];
-  /*if(upButtonPressed(chInd) || downButtonPressed(chInd) || 
-      upButtonReleased(chInd) || downButtonReleased(chInd) || state.stopRequested)
+  if(upButtonPressed(chInd) || downButtonPressed(chInd) || stopRequested[chInd])
   {
+    SerialPrintLn(F("FS"));
     enterState(chInd, CHANNEL_ENTER_IDLE);
     return;
-  }*/
-  
-  state.tilt_time -= STATE_MACHINE_STEP_TIME;
-  if(state.tilt_time <= 0 )
+  }
+  int32_t stateTime = calcTimestampDiff(stateEnterMs[chInd], millis());
+  bool    noCurrent = stateTime > 100 && currentLevel[chInd] < 15;
+  if(stateTime >= tilt_time[chInd] || noCurrent)
   {
-    state.currentTilt = state.expectedTilt;
-    state.tilt_time = 0;
+    currentTilt[chInd] = expectedTilt[chInd];
+    tilt_time[chInd] = 0;
     
-    if(state.currentPos != state.expectedPos)
+    if(currentPos[chInd] != expectedPos[chInd])
     {
       enterState(chInd, CHANNEL_ENTER_POS);
     }
@@ -406,116 +669,196 @@ void tiltMonitor(uint8_t chInd, uint8_t elapsedMs)
       enterState(chInd, CHANNEL_ENTER_IDLE);
     }
   }
+  else
+  {
+    currentTilt[chInd] = stateEnterTilt[chInd] + (expectedTilt[chInd] - stateEnterTilt[chInd]) * 
+                           (stateTime*100 / tilt_time[chInd]) / 100;
+    if(currentTilt[chInd] > 100)
+      currentTilt[chInd] = 100;
+    else if(currentTilt[chInd] < 0)
+      currentTilt[chInd] = 0;
+      
+    setChannelPublishFlag(chInd, PUBLISH_TILT_FLAG);
+  }
+  printStats(chInd);
 }
 /*
  * 
  */
-void executeStateMachine(uint8_t elapsedMs)
+void calibrateEnter(uint8_t chInd)
 {
-  for(byte i = 0; i < 4; ++i)
+  const uint32_t millisNow = millis();
+
+  switch(calibrationStep[chInd])
   {
-    switch(blindStateArray[i].currentState)
+    case 0: // Start current monitoring, reset fields, start moving to 0 pos.
+      startMonitorCurrentLevel();
+      setChannelMoveDir(chInd, ChannelDir_Up);
+      calibrationCounter[chInd] = 0;
+      calibrationStep[chInd] = 1;
+      SerialPrintLn(F("0-1"));
+      break;
+    case 1: // Wait 100ms, measure current to check if moving
+      if(++calibrationCounter[chInd] >= 50)
+      {
+        if(currentLevel[chInd] < 15)
+        {
+          calibrationStep[chInd] = 15;
+          SerialPrintLn(F("1-15"));
+        }
+        else
+        {
+          calibrationStep[chInd] = 2;
+          SerialPrintLn(F("1-2"));
+        }
+      }
+    break;
+    case 2: // wait while cover is moving
+      if(currentLevel[chInd] < 15)
+      {
+        setChannelMoveDir(chInd, ChannelDir_None);
+        currentTilt[chInd] = 0;
+        currentPos[chInd] = 0;
+        calibrationCounter[chInd] = 0;
+        calibrationStep[chInd] = 3;
+        SerialPrintLn(F("2-3"));
+      }
+    break;
+    case 3:
+      if(++calibrationCounter[chInd] > 1000) //Go to next step after 1s
+      {
+        calibrationStep[chInd] = 4;
+        SerialPrintLn(F("3-4"));
+      }
+    break;
+    case 4: // Start moving down
+      setChannelMoveDir(chInd, ChannelDir_Down);
+      calibrationTimestamp[chInd] = millisNow;
+      calibrationCounter[chInd] = 0;
+      calibrationStep[chInd] = 5;
+      SerialPrintLn(F("4-5"));
+    break;
+    case 5: // Wait 100ms, measure current to check if moving
+      if(++calibrationCounter[chInd] >= 50)
+      {
+        if(currentLevel[chInd] < 15)
+        {
+          calibrationStep[chInd] = 15;
+          SerialPrintLn(F("5-15"));
+        }
+        else
+        {
+          calibrationStep[chInd] = 6;
+          SerialPrintLn(F("5-6"));
+        }
+      }
+    break;
+    case 6: // Wait while still moving
+      if(currentLevel[chInd] < 15)
+      {
+        boardSettings.close_time[chInd] = calcTimestampDiff(calibrationTimestamp[chInd], millisNow);
+        
+        setChannelMoveDir(chInd, ChannelDir_None);
+        
+        currentTilt[chInd] = 100;
+        currentPos[chInd] = 100;
+        calibrationCounter[chInd] = 0; 
+        calibrationStep[chInd] = 7;
+        SerialPrint(F("6-7:Ct:")); SerialPrintLn(boardSettings.close_time[chInd]);
+      }
+    break;
+    case 7: // wait 1s, start moving up.
+      if(++calibrationCounter[chInd] >= 1000)
+      {
+        setChannelMoveDir(chInd, ChannelDir_Up);
+        calibrationTimestamp[chInd] = millisNow;
+        calibrationCounter[chInd] = 0;
+        calibrationStep[chInd] = 8;
+        SerialPrint(F("7-8"));
+      }
+    break;
+    case 8:  // Wait 100ms, measure current to check if moving
+      if(++calibrationCounter[chInd] >= 50)
+      {
+        if(currentLevel[chInd] < 15)
+        {
+          calibrationStep[chInd] = 15;
+          SerialPrintLn(F("8-15"));
+        }
+        else
+        {
+          calibrationStep[chInd] = 9;
+          SerialPrintLn(F("8-9"));
+        }
+      }
+    break;
+    case 9: // Wait while still moving
+      if(currentLevel[chInd] < 15)
+      {
+        boardSettings.open_time[chInd] = calcTimestampDiff(calibrationTimestamp[chInd], millisNow);
+
+        EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);
+
+        currentTilt[chInd] = 0;
+        currentPos[chInd] = 0;
+        calibrationStep[chInd] = 15;
+        Serial.println(F("EEPROM updated")); 
+        SerialPrint(F("9-15:Ot:")); SerialPrintLn(boardSettings.open_time[chInd]);
+      }
+    break;
+    case 15:
+        enterState(chInd, CHANNEL_ENTER_IDLE);
+        calibrationStep[chInd] = 0;
+        SerialPrintLn(F("15-I"));
+    break;
+    default:
+        SerialPrintLn(F("Wrg calib"));
+        enterState(chInd, CHANNEL_ENTER_IDLE);
+        calibrationStep[chInd] = 0;
+    break;
+  }
+}
+/*
+ * 
+ */
+void executeStateMachine()
+{
+  updateCurrentLevel();
+  for(byte chInd = 0; chInd < 4; ++chInd)
+  {
+    switch(currentState[chInd])
     {
       case CHANNEL_ENTER_IDLE:
-        idleEnter(i, elapsedMs);
+        idleEnter(chInd);
       break;
       case CHANNEL_MONITOR_IDLE:
-        idleMonitor(i, elapsedMs);
+        idleMonitor(chInd);
       break;
       case CHANNEL_ENTER_POS:
-        posEnter(i, elapsedMs);
+        posEnter(chInd);
       break;
       case CHANNEL_MONITOR_POS:
-        posMonitor(i, elapsedMs);
+        posMonitor(chInd);
       break;
       case CHANNEL_ENTER_TILT:
-        tiltEnter(i, elapsedMs);
+        tiltEnter(chInd);
       break;
       case CHANNEL_MONITOR_TILT:
-        tiltMonitor(i, elapsedMs);
+        tiltMonitor(chInd);
+      break;
+      case CHANNEL_ENTER_CALIBRATE:
+        calibrateEnter(chInd);
       break;
       default:
-        Serial.print(F("Nieobsługiwany stan: "));
+        SerialPrintLn(F("Wrg state"));
       break;
     }
   }
 }
-/*
-//Executed when waiting for input
-void blindIdle(uint8_t chInd, BlindState& state)
-{
-  // Do nothing if we are not at least 500ms in idle.
-  if(calcTimestampDiff(state.stateEnterMs, millis()) < 500)
-  {
-    return;
-  }
-  if(state.tilt_time)
-  {
-    enterState(state, blindEnterMove, "blindEnterMove");
-    return;
-  }
-  if(state.tilt_time)
-  {
-    enterState(state, blindEnterMove, "blindEnterMove");
-  }
-}
-void blindTiltMonitor(uint8_t chInd, BlindState& state, uint8_t elapsedMs)
-{
-  state.tilt_time -= STATE_MACHINE_STEP_TIME;
-  if(state.tilt_time <= 0 )
-  {
-    state.tilt_time = 0;
-    
-    if(state.move_time)
-    {
-      enterState(state, blindEnterTilt, "blindEnterTilt");
-    }
-    else
-    {
-      enterState(state, blindStop, "blindStop");
-    }
-  }
-}
-void blindMoveMonitor(uint8_t chInd, BlindState& state, uint8_t elapsedMs)
-{
-  state.move_time -= STATE_MACHINE_STEP_TIME;
-  if(state.move_time <= 0 )
-  {
-    state.move_time = 0;
-    
-    if(state.tilt_time)
-    {
-      enterState(state, blindTiltMonitor, "blindMonitorTilt");
-    }
-    else
-    {
-      enterState(state, blindIdle, "blindIdle");
-    }
-  }
-}
-*/
-/*
- * 
- */
-/*byte PCF8591_analogRead(byte ind)
-{
-  uint8_t error;
-  Wire.beginTransmission(PCF8591_ADRESS);
-  Wire.write(ind);
-  error = Wire.endTransmission();
-  if(error != 0)
-  {
-    Serial.print(F("PCF read er: "));
-    Serial.println(error);
-    return 0;
-  }
-  Wire.requestFrom(PCF8591_ADRESS, 2);
-  Wire.read();
-  return Wire.read();
-}*/
 
 void readInputsInterruptHandler()
 {
+  const uint32_t millisNow = millis();
   for(byte i = 0; i < NUM_IOS; ++i)
   {
     inputCounters[i] <<= 1;
@@ -537,129 +880,107 @@ void readInputsInterruptHandler()
     }
     if(get_bit(inputsState, i) != get_bit(lastinputsState, i))
     {
-      lastinputsChange[i] = millis();
-      /*if(!get_bit(boardSettings.mode, i))
+      if(get_bit(inputsState, i))
       {
-        if(get_bit(inputsState, i))
-        {
-          toggleOutputState(i);
-        }
+        lastinputsPressed[i] = millisNow;
       }
       else
-      {  
-        set_bit(inputsStateToPublish, i);
-      }*/
+      {
+        lastinputsReleased[i] = millisNow;
+      }
     }
   }
 
-  executeStateMachine(STATE_MACHINE_STEP_TIME);
+  executeStateMachine();
   
   lastinputsState = inputsState;
 }
-/*
-void setOutputState(int index, bool state)
-{
-  byte currentState = outputsState;
-  if(state)
-  {
-    set_bit(outputsState, index);
-  }
-  else
-  {
-    clear_bit(outputsState, index);
-  }
-  if(outputsState != currentState)
-  {
-    set_bit(outputsStateToPublish, index);
-    //Serial.print("O: ");
-    //Serial.println(outputsState, BIN);
-    MCP27008_write(sWire, MCP27008_ADRESS, outputsState);
-  }
-}
-void toggleOutputState(int index)
-{
-  setOutputState(index, !get_bit(outputsState, index));
-}
-*/
+
 void callback(char* topic, byte* payload, unsigned int length)
 {
   int8_t channelInd = 0;
   int8_t value;
-  Serial.print(F("Rcv: "));
-  Serial.println(topic);
-  Serial.print("[");
+  SerialPrintLn(F("Rcv: "));
+  SerialPrintLn(topic);
+  SerialPrintLn("[");
   int i=0;
   for (i=0;i<length;i++) {
-    Serial.print((char)payload[i]);
+    SerialPrintLn((char)payload[i]);
   }
-  Serial.println("]");
+  SerialPrintLn("]");
 
-  /*relayPin = topic[TOPIC_CMD_CHANNEL_INDEX] - '0';
-
-  if(relayPin < 1 || relayPin > NUM_IOS)
+  char* substr = strstr(topic, cmdPosSubtopic);
+  if(substr)
   {
-    Serial.println(F("Wrg channel"));
     return;
   }
-  if(length == 4 && memcmp(payload, "OPEN", 4) == 0)
+  substr = strstr(topic, cmdTiltSubtopic);
+  if(substr)
   {
-  }
-  else if(length == 5 && memcmp(payload, "CLOSE", 5) == 0)
-  {
-  }
-  else if(length == 4 && memcmp(payload, "STOP", 4) == 0)
-  {
-    blindStateArray[channelInd].stopRequested = true;
-  }
-  else
-  {
-    value = atoi((const char*)payload);
-  }
-  if(bright < 0 || bright > 100)
-  {
-    Serial.println(F("Wrong VAL"));
     return;
-  }*/
+  }
+  substr = strstr(topic, cmdCalibSubtopic);
+  if(substr)
+  {
+    return;
+  }
 }
-
+/*
+ * 
+ */
 void publishMsg(PubSubClient& client, const char* topic, const char* payload)
 {
-  Serial.print(F("Pub: "));
-  Serial.print(topic);
-  Serial.print(F(": "));
-  Serial.println(payload);
+  SerialPrintLn(F("Pub: "));
+  SerialPrintLn(topic);
+  SerialPrintLn(F(": "));
+  SerialPrintLn(payload);
 
   client.publish((const char*)topic, payload, true);
 }
-/*void checkOutputsAndPublish(PubSubClient& client)
+/*
+ * 
+ */
+void checkFlagsAndPublish(PubSubClient& client)
 {
+  const uint32_t millisNow = millis();
+  static uint32_t lastCheck = 0;
+  if(calcTimestampDiff(lastCheck, millisNow) < 2000)
+  {
+    return;
+  }
+  lastCheck = millisNow;
+  
+  char buffer[7];
   noInterrupts();
-  byte currentOutputsStateToPublish = outputsStateToPublish;
-  byte currentOutputsState = outputsState;
-  outputsStateToPublish = 0;
+  byte currentPublishFlag = publishFlag;
+  publishFlag = 0;
   interrupts();
   
-  if(currentOutputsStateToPublish == 0)
+  if(currentPublishFlag == 0)
     return;
-  
-  for(uint8_t i = 0; i < NUM_IOS; ++i)
+
+  for(byte chInd = 0; chInd < 4; ++chInd)
   {
-    if(get_bit(currentOutputsStateToPublish, i))
+    if(currentPublishFlag & (PUBLISH_ALL_FLAG << chInd) == 0)
+      continue;
+      
+    if(currentPublishFlag & (PUBLISH_POS_FLAG << chInd) != 0)
     {
-      //outputStateTopic[TOPIC_OUT_STATE_CHANNEL_INDEX] = i + '1';
-      //Serial.print(outputStateTopic);
-      if(get_bit(currentOutputsState, i))
-      {
-        publishMsg(client, (const char*)outputStateTopic, "ON");
-      }
-      else
-      {
-        publishMsg(client, (const char*)outputStateTopic, "OFF");
-      }
+      itoa((int)currentPos[chInd], buffer, 10);
+      publishMsg(client, getTopic(statePosSubtopic), buffer);
+    }
+      
+    if(currentPublishFlag & (PUBLISH_TILT_FLAG << chInd) != 0)
+    {
+      itoa((int)currentTilt[chInd], buffer, 10);
+      publishMsg(client, getTopic(stateTiltSubtopic), buffer);
     }
   }
-}*/
-void checkInputsAndPublish(PubSubClient& client)
+}
+/*
+ * 
+ */
+/*void checkInputsAndPublish(PubSubClient& client)
 {
   noInterrupts();
   byte currentInputsStateToPublish = inputsStateToPublish;
@@ -672,10 +993,10 @@ void checkInputsAndPublish(PubSubClient& client)
   
   for(byte i = 0; i < NUM_IOS; ++i)
   {
-    /*if(get_bit(boardSettings.mode, i) && get_bit(currentInputsStateToPublish, i))
+    if(get_bit(boardSettings.mode, i) && get_bit(currentInputsStateToPublish, i))
     {
       inputStateTopic[TOPIC_IN_STATE_CHANNEL_INDEX] = i + '1';
-      Serial.print(inputStateTopic);
+      SerialPrintLn(inputStateTopic);
       if(get_bit(currentInputsState, i))
       {
         publishMsg(client, (const char*)inputStateTopic, "ON");
@@ -684,17 +1005,23 @@ void checkInputsAndPublish(PubSubClient& client)
       {
         publishMsg(client, (const char*)inputStateTopic, "OFF");
       }
-    }*/
+    }
   }
-}
-
+}*/
+/*
+ * 
+ */
 void setup()
 {
   Serial.begin(115200);
   while (!Serial) {
     ; // wait for serial port to connect. Needed for Leonardo only
   }
+#ifdef COVERIO_DEBUG_MODE
+  Serial.print(F("COVERIO DEBUG ver: "));
+#else
   Serial.print(F("COVERIO ver: "));
+#endif
   Serial.println(SOFT_VER);
  
   for(byte i = 0; i < NUM_IOS; ++i)
@@ -706,15 +1033,16 @@ void setup()
 
   if(EEPROM.read(EEPROM_VERSION_OFFSET) != EEPROM_VERSION)
   {
-    Serial.println(F("Clearing EEPROM!"));
+    SerialPrintLn(F("Clearing EEPROM!"));
     memset(&boardSettings, 0, sizeof(boardSettings));
   
     for(uint8_t i = 0; i < 4; ++i)
     {
-      boardSettings.open_time[i] = 6000;
-      boardSettings.close_time[i] = 6000;
-      boardSettings.tilt_time[i] = 2000;
+      boardSettings.open_time[i] = 0;
+      boardSettings.close_time[i] = 0;
+      boardSettings.tilt_time[i] = 0;
     }
+    boardSettings.long_press_time  = 2500;
     EEPROM.write(EEPROM_VERSION_OFFSET, EEPROM_VERSION);
     EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);
   }
@@ -727,31 +1055,76 @@ void setup()
   {
     byteToHexStr(mac[i+2], clientId + (TOPIC_ID_START_INDEX + i*2));
   }
-  memcpy(posCommandTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
-  memcpy(tiltCommandTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
-  memcpy(posStateTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
-  memcpy(tiltStateTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
+  //memcpy(posCommandTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
+  //memcpy(tiltCommandTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
+  //memcpy(calibCommandTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
+  //memcpy(posStateTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
+  //memcpy(tiltStateTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
+  memcpy(commandTopic+TOPIC_ID_START_INDEX, clientId+TOPIC_ID_START_INDEX, 8);
 
-  Serial.println(posCommandTopic);
-  Serial.println(tiltCommandTopic);
-  Serial.println(posStateTopic);
-  Serial.println(tiltStateTopic);
-  Serial.println(clientId);
+  //Serial.println(commandTopic);
+  //SerialPrintLn(posCommandTopic);
+  //SerialPrintLn(tiltCommandTopic);
+  //SerialPrintLn(calibCommandTopic);
+  //SerialPrintLn(posStateTopic);
+  //SerialPrintLn(tiltStateTopic);
+  //SerialPrintLn(clientId);
   
+#ifdef COVERIO_DEBUG_MODE
   for(byte i = 0; i < 4; ++i)
   {
-    Serial.print(boardSettings.mqtt.mqtt_ip[i]);
-    if(i < 3)Serial.print(".");
+    SerialPrint(boardSettings.mqtt.mqtt_ip[i]);
+    if(i < 3)SerialPrint(".");
   }
-  Serial.print(F(":"));
-  Serial.println(boardSettings.mqtt.mqtt_port);
+  SerialPrint(F(":"));
+  SerialPrintLn(boardSettings.mqtt.mqtt_port);
   
-  Serial.print(boardSettings.mqtt.mqtt_username);
-  Serial.print(F(":"));
-  Serial.println(boardSettings.mqtt.mqtt_password);
-  
+  SerialPrint(boardSettings.mqtt.mqtt_username);
+  SerialPrint(F(":"));
+  SerialPrintLn(boardSettings.mqtt.mqtt_password);
+#endif
+
   sWire.begin();
-  
+/*
+  scanI2C(sWire);
+
+  uint32_t timeNow = 0, bytesReceived = 0;
+  byte NUM_BYTES = 4, SLAVE_ADDR = 0x22;
+  while(1)
+  {
+    if (millis() - timeNow >= 750) {                                        // trigger every 750mS
+      
+        Serial.print(F("Milis: "));Serial.print(micros());Serial.println("");
+        // request bytes from slave
+        sWire.requestFrom(SLAVE_ADDR, NUM_BYTES);
+        while(sWire.available() < 4)
+        {
+        }
+        bytesReceived = 0;
+        
+        Serial.print(F("Milis: "));Serial.print(micros());Serial.print(", ");
+        
+        bytesReceived = 0;
+        timeNow = millis();                                                // mark preset time for next trigger
+    }
+    while(bytesReceived < 4)
+    {
+      int c = sWire.read();    // receive a byte as character
+      Serial.print(F("Byte["));
+      Serial.print(bytesReceived);
+      Serial.print(F("]: "));
+      Serial.print(c);
+      Serial.print(F("\t"));
+      ++bytesReceived;
+      if(bytesReceived == 4)
+      { 
+        Serial.println("");
+      }
+    }
+    
+    delay(10);
+  }
+*/
   MCP27008_setup(sWire, MCP27008_ADRESS);
   MCP27008_write(sWire, MCP27008_ADRESS, outputsState);
   
@@ -762,7 +1135,6 @@ void setup()
   digitalWrite(A0, HIGH);
 
   mqttClient.setCallback(callback);
-  Serial.print(F("Ethernet: "));
   //Ethernet.begin(mac, IPAddress(192, 168, 1, 6), IPAddress(255, 255, 255, 0), IPAddress(192, 168, 1, 254));
   while(!Ethernet.begin(mac))
   {
@@ -770,6 +1142,7 @@ void setup()
   }
   ethServer.begin();
 
+  Serial.print(F("Ethernet: "));
   Serial.println(Ethernet.localIP()); 
   //Serial.println(Ethernet.subnetMask());
   //Serial.println(Ethernet.gatewayIP());
@@ -782,25 +1155,35 @@ void handleMqttClient()
 {
   if (!mqttClient.connected())
   {
-    if(mqttConnectionFlag == 0 || calcTimestampDiff(lastConnectMillis, millis()) >= 20000)
+    const uint32_t millisNow = millis();
+    if(mqttConnectionFlag == 0 || calcTimestampDiff(lastConnectMillis, millisNow) >= 20000)
     {
       mqttConnectionFlag = 1;
-      lastConnectMillis = millis();
+      lastConnectMillis = millisNow;
       
       mqttClient.setServer(boardSettings.mqtt.mqtt_ip, boardSettings.mqtt.mqtt_port);
-      Serial.print(F("MQTT connecting..."));
+      Serial.print(("MQTT connecting..."));
       if (mqttClient.connect(clientId, boardSettings.mqtt.mqtt_username, boardSettings.mqtt.mqtt_password))
       {
-        Serial.print(F(" Connected, sub= "));
-        Serial.print(posCommandTopic);
-        Serial.print(F(", "));
-        Serial.println(tiltCommandTopic);
-        mqttClient.subscribe(posCommandTopic);
-        mqttClient.subscribe(tiltCommandTopic);
+        Serial.print((" sub= "));
+        /*char* cmdTopic = getCmdTopic(commandPos);
+        Serial.println(cmdTopic);
+        mqttClient.subscribe(cmdTopic);
+
+        cmdTopic = getCmdTopic(commandTilt);
+        Serial.println(cmdTopic);
+        mqttClient.subscribe(cmdTopic);
+        
+        cmdTopic = getCmdTopic(commandCalib);
+        Serial.println(cmdTopic);
+        mqttClient.subscribe(cmdTopic);*/
+        const char* subTopic = getTopic(subscribeSubtopic);
+        Serial.println(subTopic);
+        mqttClient.subscribe(subTopic);
       }
       else
       {
-        Serial.print(F(" Disconnected, err="));
+        Serial.print((" err= "));
         Serial.println(mqttClient.state());
       }
     }
@@ -808,7 +1191,8 @@ void handleMqttClient()
   else
   {
     //checkOutputsAndPublish(mqttClient);
-    checkInputsAndPublish(mqttClient);
+    //checkInputsAndPublish(mqttClient);
+    checkFlagsAndPublish(mqttClient);
     mqttClient.loop();
   }
 }
@@ -817,10 +1201,12 @@ CustomHandlers customHandlers =
 {
   .customProcess = processCustomParams,
   .customForms = addCustomForms,
-  .customSend = addCustomSend,
   .mqtt_ptr = &boardSettings.mqtt
 };
-bool parseOpenTime(const char* reqStr, uint32_t* timersArray)
+/*
+ * 
+ */
+/*bool parseOpenTime(const char* reqStr, uint32_t* timersArray)
 {
   int  iArray[4];
   bool result = false;
@@ -837,9 +1223,11 @@ bool parseOpenTime(const char* reqStr, uint32_t* timersArray)
     }
   }
   return result;
-}
-
-bool parseCloseTime(const char* reqStr, uint32_t* timersArray)
+}*/
+/*
+ * 
+ */
+/*bool parseCloseTime(const char* reqStr, uint32_t* timersArray)
 {
   int  iArray[4];
   bool result = false;
@@ -856,30 +1244,68 @@ bool parseCloseTime(const char* reqStr, uint32_t* timersArray)
     }
   }
   return result;
-}
+}*/
+/*
+ * 
+ */
 bool parseTiltTime(const char* reqStr, uint32_t* timersArray)
 {
-  int  iArray[4];
+  int  iArray;
   bool result = false;
-  char* strPtr = strstr(reqStr, "&tilt_time=");
-  if(strPtr)
+  char formName[] = { "&t =\0" };
+  for(byte i = 0; i < 4; ++i)
   {
-    strPtr += 10;
-    if(sscanf(strPtr, "=%d,%d,%d,%d&", iArray, iArray+1, iArray+2, iArray+3) == 4)
+    formName[2] =  i + '1';
+    char* strPtr = strstr(reqStr, formName);
+    if(strPtr)
     {
-      for(byte i = 0; i < 4; ++i)
-        timersArray[i] = iArray[i];
-        
+      strPtr += 3;
+      if(sscanf(strPtr, "=%d&", &iArray) == 1)
+      {
+        timersArray[i] = iArray;
+          
+        result = true;
+      }
+    }
+  }
+  return result;
+}
+/*
+ * 
+ */
+bool parseCalibration(const char* reqStr, bool* flagArray)
+{
+  int  iArray;
+  bool result = false;
+  char formName[] = { "&c =\0" };
+  for(byte i = 0; i < 4; ++i)
+  {
+    formName[2] =  i + '1';
+    char* strPtr = strstr(reqStr, formName);
+    if(strPtr)
+    {
+      strPtr += 3;
+      if(*(strPtr+1) == '1')
+      {
+        flagArray[i] = true;
+      }
+      else
+      {
+        flagArray[i] = false;
+      }
       result = true;
     }
   }
   return result;
 }
-
+/*
+ * 
+ */
 bool processCustomParams(const char* reqStr)
 {
   bool result = false;
-  if(parseOpenTime(reqStr, boardSettings.open_time))
+  bool runCalib = false;
+  /*if(parseOpenTime(reqStr, boardSettings.open_time))
   {
     Serial.print(F("Received: open_time\t:"));
     for(byte i = 0; i < 4; ++i)
@@ -900,10 +1326,10 @@ bool processCustomParams(const char* reqStr)
     }
     Serial.println(F(""));
     result = true;
-  }
+  }*/
   if(parseTiltTime(reqStr, boardSettings.tilt_time))
   {
-    Serial.print(F("Received: tilt_time\t:"));
+    Serial.print(F("R: tilt\t:"));
     for(byte i = 0; i < 4; ++i)
     {
       Serial.print(boardSettings.tilt_time[i]);
@@ -912,23 +1338,40 @@ bool processCustomParams(const char* reqStr)
     Serial.println(F(""));
     result = true;
   }
+  if(parseCalibration(reqStr, requestedCalibration))
+  {
+    Serial.print(F("R: calib:"));
+    for(byte i = 0; i < 4; ++i)
+    {
+      Serial.print(requestedCalibration[i]);
+      if(i<3)Serial.print(F(","));
+    }
+    Serial.println(F(""));
+  }
   return result;
 }
+/*
+ * 
+ */
 void addCustomForms(EthernetClient& client)
 {
-  client.println(F("\n\t\tOpen time(ms)\t\tClose time(ms)\t\tTilt time(ms)"));
+  client.println(F("\n\t\tOpen time(ms)\tClose time(ms)\tTilt time(ms)\t Calibrate"));
   for(byte i = 0; i < 4; ++i)
   {
     client.print(F("  Channel "));client.print(i+1);
-    client.print(F("\t<input type=\"text\" name=\"fo"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
+    //client.print(F("\t<input type=\"text\" name=\"fo"));client.print(i+1); client.print(F("\"  maxlength=8 size=8 value=\"")); 
+    client.print(F("\t"));
     client.print(boardSettings.open_time[i]);
-    client.print(F("\">"));
-    client.print(F("\t\t<input type=\"text\" name=\"fc"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
+    //client.print(F("\">"));
+    //client.print(F("\t\t<input type=\"text\" name=\"fc"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
+    client.print(F("\t\t"));
     client.print(boardSettings.close_time[i]);
+    //client.print(F("\">"));
+    client.print(F("\t\t<input type=\"text\" name=\"t"));client.print(i+1); 
+    client.print(F("\" maxlength=8 size=8 value=\"")); client.print(boardSettings.tilt_time[i]);
     client.print(F("\">"));
-    client.print(F("\t\t<input type=\"text\" name=\"ft"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
-    client.print(boardSettings.tilt_time[i]);
-    client.println(F("\">"));
+    client.print(F("\t<input type=\"checkbox\" name=\"c")); client.print(i+1);
+    client.println(F("\" value=\"1\">"));
   }
 
   client.println(F(""));
@@ -936,46 +1379,52 @@ void addCustomForms(EthernetClient& client)
   client.print(F("\tMQTT client id:\t\t"));
   client.println(clientId);
   client.print(F("\tMQTT subscription:\t"));
-  client.print(posCommandTopic);
-  client.print(F(", "));
-  client.println(tiltCommandTopic);
+  client.println(getTopic(subscribeSubtopic));
+  //client.print(F("\n\t\t\t\t"));
+  //client.print(tiltCommandTopic);
+  //client.print(F("\n\t\t\t\t"));
+  //client.println(commandTopic);
   client.print(F("\tMQTT connection state:\t"));
   client.println(mqttClient.state());
   client.print(F("\tUptime:\t\t\t"));
   client.println(millis()); 
-  client.print(F("\tSoft version:\t\t"));
+  client.print(F("\tVersion:\t\t"));
   client.println(SOFT_VER);
 }
 void addCustomSend(EthernetClient& client)
 {
   byte i;
-  client.println(F("   strText += \"&open_time=\";"));
+  /*client.println(F("strText+=\"&open_time=\";"));
   for(i = 0; i < 4; ++i)
   {
-    client.print(F("   strText += document.getElementById(\"txt_form\").fo"));client.print(i);client.print(F(".value;"));
-    if(i < 3)client.print(F("   strText += \",\";"));
+    client.print(F("strText+=document.getElementById(\"txt_form\").fo"));client.print(i);client.print(F(".value;"));
+    if(i < 3)client.print(F("strText+=\",\";"));
   }
-  client.println(F("   strText += \"&close_time=\";"));
+  client.println(F("strText+=\"&close_time=\";"));
   for(i = 0; i < 4; ++i)
   {
-    client.print(F("   strText += document.getElementById(\"txt_form\").fc"));client.print(i);client.print(F(".value;"));
-    if(i < 3)client.print(F("   strText += \",\";"));
+    client.print(F("strText+=document.getElementById(\"txt_form\").fc"));client.print(i);client.print(F(".value;"));
+    if(i < 3)client.print(F("strText+=\",\";"));
   }
-  client.println(F("   strText += \"&tilt_time=\";"));
+  client.println(F("strText+=\"&tilt_time=\";"));
   for(i = 0; i < 4; ++i)
   {
-    client.print(F("   strText += document.getElementById(\"txt_form\").ft"));client.print(i);client.print(F(".value;"));
-    if(i < 3)client.print(F("   strText += \",\";"));
+    client.print(F("strText+=document.getElementById(\"txt_form\").ft"));client.print(i);client.print(F(".value;"));
+    if(i < 3)client.print(F("strText+=\",\";"));
   }
+  client.println(F("strText+=\"&calib=\";"));
+  client.print(F("strText+=document.getElementById(\"txt_form\").cc.checked;"));
+  */
 }
   
 static uint32_t maintainLastMillis = 0;
 static byte maintainRes, connectionFlag;
 void loop()
 {
-  if(calcTimestampDiff(maintainLastMillis, millis()) >= 10000)
+  const uint32_t millisNow = millis();
+  if(calcTimestampDiff(maintainLastMillis, millisNow) >= 10000)
   {
-    maintainLastMillis = millis();
+    maintainLastMillis = millisNow;
     
     maintainRes = Ethernet.maintain();
     if(maintainRes == 2 || maintainRes == 4)
@@ -996,8 +1445,9 @@ void loop()
   }
   
   handleMqttClient();
-    
-  HttpResult httpRes = httpHandle2(ethServer, customHandlers);
+  
+#ifndef COVERIO_DEBUG_MODE
+  HttpResult httpRes = httpHandle2(ethServer, customHandlers, Ethernet.localIP());
   if(httpRes != HTTP_NO_ACTION)
   {
     EEPROM.put(EEPROM_SETTINGS_OFFSET, boardSettings);
@@ -1009,4 +1459,6 @@ void loop()
       Serial.println(F("MQTT disconnected"));
     }
   }
+#endif
+
 }

@@ -80,7 +80,7 @@ HttpResult httpHandle(EthernetServer& ethServer, MqttSettings& settings, httpReq
       {
         counter = 0;
         ipStr += 3;
-        Serial.print(F("ip: "));
+        //Serial.print(F("ip: "));
         pch = strtok (ipStr, ".&");
         while (pch != NULL && counter < 4)
         {
@@ -88,9 +88,9 @@ HttpResult httpHandle(EthernetServer& ethServer, MqttSettings& settings, httpReq
 		  {
 			  break;
 		  }
-          Serial.print(pch);
-          if(counter<3)Serial.print(F("."));
-          else Serial.println(F(""));
+          //Serial.print(pch);
+          //if(counter<3)Serial.print(F("."));
+          //else Serial.println(F(""));
           settings.mqtt_ip[counter] = atoi(pch);
           // go to next token
           pch = strtok (NULL, ".&");
@@ -101,27 +101,27 @@ HttpResult httpHandle(EthernetServer& ethServer, MqttSettings& settings, httpReq
       if(portStr != NULL)
       {
         portStr += 5;
-        Serial.print(F("port: "));
+        //Serial.print(F("port: "));
         pch = strtok (portStr, "&");
-        Serial.println(pch);
+        //Serial.println(pch);
         settings.mqtt_port = atoi(pch);
 		retVal = HTTP_MQTT_CHANGE;
       }
       if(userStr != NULL)
       {
         userStr += 5;
-        Serial.print(F("user: "));
+        //Serial.print(F("user: "));
         pch = strtok (userStr, "&");
-        Serial.println(pch);
+        //Serial.println(pch);
         strcpy(settings.mqtt_username, pch);
 		retVal = HTTP_MQTT_CHANGE;
       }
       if(pwdStr != NULL)
       {
         pwdStr += 4;
-        Serial.print(F("pwd: "));
+        //Serial.print(F("pwd: "));
         pch = strtok (pwdStr, "&");
-        Serial.println(pch);
+        //Serial.println(pch);
         strcpy(settings.mqtt_password, pch);
 		retVal = HTTP_MQTT_CHANGE;
       }
@@ -172,8 +172,6 @@ HttpResult httpHandle(EthernetServer& ethServer, MqttSettings& settings, httpReq
 #ifndef HTTP_REQ_BUF_SZ
 #define HTTP_REQ_BUF_SZ   150
 #endif
-// size of buffer that stores the incoming string               // the web page file on the SD card
-static char HTTP_req[REQ_BUF_SZ] = {0}; // buffered HTTP request stored as null terminated string
 
 bool parseIp(const char* reqStr, uint8_t* ipArray)
 {
@@ -224,6 +222,7 @@ bool parseUser(const char* reqStr, char* userStr)
       ++strPtr;
       result = true;
     }
+	*userStr = 0;
   }
   return result;
 }
@@ -241,6 +240,7 @@ bool parsePassword(const char* reqStr, char* pwdStr)
       ++strPtr;
       result = true;
     }
+	*pwdStr = 0;
   }
   return result;
 }
@@ -249,17 +249,20 @@ struct CustomHandlers
 {
   bool (*customProcess)(const char*);
   void (*customForms)(EthernetClient&);
-  void (*customSend)(EthernetClient&);
   MqttSettings* mqtt_ptr;
 };
 
-HttpResult httpHandle2(EthernetServer& ethServer, struct CustomHandlers& handlers)
+HttpResult httpHandle2(EthernetServer& ethServer, struct CustomHandlers& handlers, const IPAddress& localIp)
 {
+  // size of buffer that stores the incoming string               // the web page file on the SD card
+  static char    HTTP_req[HTTP_REQ_BUF_SZ] = {0}; // buffered HTTP request stored as null terminated string
+  int16_t req_index = 0;
+  
   HttpResult result = HTTP_NO_ACTION;
   EthernetClient client = ethServer.available();  // try to get client
 
   if (client) {  // got client?
-      boolean currentLineIsBlank = true;
+      bool currentLineIsBlank = true;
       while (client.connected()) {
           if (client.available()) {   // client data available to read
               char c = client.read(); // read 1 byte (character) from client
@@ -280,22 +283,16 @@ HttpResult httpHandle2(EthernetServer& ethServer, struct CustomHandlers& handler
                   // remainder of header follows below, depending on if
                   // web page or XML page is requested
                   // Ajax request - send XML file
-                  if (strstr(HTTP_req, "ajax_inputs") != 0) {
+                  if (strstr(HTTP_req, "GET /?") != 0) {
                       // send rest of HTTP header
-                      client.println(F("Content-Type: text/xml"));
-                      client.println(F("Connection: close"));
-                      client.println();
-
+                      //client.println(F("Content-Type: text/xml"));
+                      //client.println(F("Connection: close"));
+                      //client.println();
                       Serial.println(HTTP_req);
-                      // print the received text to the Serial Monitor window
-                      // if received with the incoming HTTP GET string
-                      /*if (GetText(txt_buf, TXT_BUF_SZ)) {
-                        Serial.println(F("\r\nReceived Text:"));
-                        Serial.println(txt_buf);
-                      }*/
+
                       if(parseIp(HTTP_req, handlers.mqtt_ptr->mqtt_ip))
                       {
-                        Serial.print(F("Received: ip\t\t:"));
+                        Serial.print(F("R: ip\t:"));
                         for(int i = 0; i < 4; ++i)
                         {
                           Serial.print(handlers.mqtt_ptr->mqtt_ip[i]);
@@ -306,22 +303,22 @@ HttpResult httpHandle2(EthernetServer& ethServer, struct CustomHandlers& handler
                       }
                       if(parsePort(HTTP_req, &handlers.mqtt_ptr->mqtt_port))
                       {
-                        Serial.print(F("Received: port\t\t:"));
-                        Serial.print(handlers.mqtt_ptr->mqtt_port);
+                        Serial.print(F("R: port\t:"));
+                        Serial.println(handlers.mqtt_ptr->mqtt_port);
                         Serial.println(F(""));
                         result |= HTTP_MQTT_CHANGE;
                       }
                       if(parseUser(HTTP_req, handlers.mqtt_ptr->mqtt_username))
                       {
-                        Serial.print(F("Received: user\t\t:"));
-                        Serial.print(handlers.mqtt_ptr->mqtt_username);
+                        Serial.print(F("R: user\t:"));
+                        Serial.println(handlers.mqtt_ptr->mqtt_username);
                         Serial.println(F(""));
                         result |= HTTP_MQTT_CHANGE;
                       }
                       if(parsePassword(HTTP_req, handlers.mqtt_ptr->mqtt_password))
                       {
-                        Serial.print(F("Received: pwd\t\t:"));
-                        Serial.print(handlers.mqtt_ptr->mqtt_password);
+                        Serial.print(F("R: pwd\t:"));
+                        Serial.println(handlers.mqtt_ptr->mqtt_password);
                         Serial.println(F(""));
                         result |= HTTP_MQTT_CHANGE;
                       }
@@ -330,92 +327,51 @@ HttpResult httpHandle2(EthernetServer& ethServer, struct CustomHandlers& handler
                         result |= HTTP_USER_CHANGE;
                       }
                   }
-                  else
-                  {  // web page request
-                      // send rest of HTTP header
-                      client.println(F("Content-Type: text/html"));
-                      client.println(F("Connection: keep-alive"));
-                      client.println(F(""));
-                      // send web page
+				  // web page request
+				  // send rest of HTTP header
+				  client.println(F("Content-Type: text/html"));
+				  client.println(F("Connection: keep-alive"));
+				  client.println(F(""));
+				  // send web page
 
-                      client.println(F("<!DOCTYPE html>"));
-                      client.println(F("<html lang=\"en\">"));
-                      client.println(F("<head>"));
-                      client.println(F("<meta charset=\"utf-8\">"));
-                      client.println(F("<title>RELIO Lan Controller configuration</title>"));
-                      client.println(F("<script>"));
-                      client.println(F("  strText = \"\";"));
-                      client.println(F("  function SendText()"));
-                      client.println(F("  {"));
-                      client.println(F("   nocache = \"&nocache=\" + Math.floor(Math.random() * 1000000);"));
-                      client.println(F("   var request = new XMLHttpRequest();"));
-                      client.println(F("   strText = \"&ip=\" + document.getElementById(\"txt_form\").form_ip.value;"));
-                      client.println(F("   strText += \"&port=\" + document.getElementById(\"txt_form\").form_port.value;"));
-                      client.println(F("   strText += \"&user=\" + document.getElementById(\"txt_form\").form_user.value;"));
-                      client.println(F("   strText += \"&pwd=\" + document.getElementById(\"txt_form\").form_pwd.value;"));
-                      /*client.println(F("   strText += \"&timers=\";"));
-                      for(uint8_t i = 0; i < 8; ++i)
-                      {
-                        client.print(F("   strText += document.getElementById(\"txt_form\").form_timer"));client.print(i);client.print(F(".value;"));
-                        if(i < 7)client.print(F("   strText += \",\";"));
-                      }*/
-                      handlers.customSend(client);
-                      
-                      client.println(F(""));
-                      client.println(F("   request.open(\"GET\", \"ajax_inputs\" + strText + nocache, true);"));
-                      client.println(F("   request.send(null);"));
-                      client.println(F("  }"));
-                      client.println(F("</script>"));
-                      client.println(F("</head>"));
-                      client.println(F("<body onload=\"GetArduinoIO()\">"));
-                      client.println(F("<form id=\"txt_form\" name=\"frmText\">"));
-                      client.println(F("<PRE>"));
-                      client.println(F("<H1>Settings:</H1>"));
-                      client.print(F("\tMQTT ip:\t"));
-                      client.print(F("<input type=\"text\" name=\"form_ip\" maxlength=15 size=15  value=\""));
-                        for(uint8_t i = 0; i < 4; ++i)
-                        {
-                          client.print(handlers.mqtt_ptr->mqtt_ip[i]);
-                          if(i < 3)client.print(".");
-                        }
-                      client.println(F("\">"));
-                      client.print(F("\tMQTT port:\t"));
-                      client.println(F("<input type=\"text\" name=\"form_port\" maxlength=4 size=4 value=\"")); client.println(handlers.mqtt_ptr->mqtt_port); client.println(F("\">"));
-                      client.print(F("\tMQTT user:\t"));
-                      client.println(F("<input type=\"text\" name=\"form_user\" maxlength=16 size=16 value=\"")); client.println((const char*)handlers.mqtt_ptr->mqtt_username); client.println(F("\">"));
-                      client.print(F("\tMQTT pwd:\t"));
-                      client.println(F("<input type=\"text\" name=\"form_pwd\" maxlength=16 size=16 value=\"")); client.println((const char*)handlers.mqtt_ptr->mqtt_password); client.println(F("\">"));
-                      /*client.println(F("\n\tTimeout in seconds:"));
-                        for(uint8_t i = 0; i < 8; ++i)
-                        {
-                          client.print(F("\t  Channel "));client.print(i+1);
-                          client.print(F(" <input type=\"text\" name=\"form_timer"));client.print(i); client.print(F("\"  maxlength=3 size=3 value=\"")); 
-                          client.print(boardSettings.timers[i]);
-                          client.println(F("\">"));
-                        }*/
-                      handlers.customForms(client);
+				  client.println(F("<!DOCTYPE html>"));
+				  client.println(F("<html lang=\"en\">"));
+				  client.println(F("<head>"));
+				  client.println(F("<meta charset=\"utf-8\">"));
+				  client.println(F("<title>Lan Controller configuration</title>"));
+				  client.println(F("</head>"));
+				  client.println(F("<body>"));
+				  client.print(F("<form action=\"http://"));
+				  client.print(localIp);
+				  client.println(F("\" method=\"get\">"));
+				  client.println(F("<PRE>"));
+				  client.println(F("<H1>Settings:</H1>"));
+				  client.print(F("  MQTT ip:\t"));
+				  client.print(F("<input type=\"text\" name=\"ip\" maxlength=15 size=15  value=\""));
+					for(uint8_t i = 0; i < 4; ++i)
+					{
+					  client.print(handlers.mqtt_ptr->mqtt_ip[i]);
+					  if(i < 3)client.print(".");
+					}
+				  client.println(F("\">"));
+				  client.print(F("  MQTT port:\t"));
+				  client.println(F("<input type=\"text\" name=\"port\" maxlength=4 size=4 value=\"")); client.println(handlers.mqtt_ptr->mqtt_port); client.println(F("\">"));
+				  client.print(F("  MQTT user:\t"));
+				  client.println(F("<input type=\"text\" name=\"user\" maxlength=16 size=16 value=\"")); client.println((const char*)handlers.mqtt_ptr->mqtt_username); client.println(F("\">"));
+				  client.print(F("  MQTT pwd:\t"));
+				  client.println(F("<input type=\"text\" name=\"pwd\" maxlength=16 size=16 value=\"")); client.println((const char*)handlers.mqtt_ptr->mqtt_password); client.println(F("\">"));
 
-                        
-                      client.println(F(""));
-                      client.println(F("\t<input type=\"submit\" value=\"Save\" onclick=\"SendText()\" />"));
-                      client.println(F(""));
-                      client.print(F("<H1>State:</H1>"));
-                      client.print(F("\tMQTT client id:\t\t"));
-                      client.println(clientId);
-                      client.print(F("\tMQTT subscription:\t"));
-                      client.println(outputCommandTopic);
-                      client.print(F("\tMQTT connection state:\t"));
-                      client.println(mqttClient.state());
-                      client.print(F("\tUptime:\t\t\t"));
-                      client.println(millis()); 
-                      client.print(F("\tSoft version:\t\t"));
-                      client.println(SOFT_VER);
-                      client.println(F("</PRE>"));
-                      client.println(F("</form>"));
-                      client.println(F("</body>"));
-                      client.println(F(""));
-                      client.println(F("</html>"));
-                  }
+				  handlers.customForms(client);
+					
+				  client.println(F(""));
+				  client.println(F("\t<input type=\"submit\" value=\"Send\"/>"));
+				  client.println(F(""));
+				  
+				  client.println(F("</PRE>"));
+				  client.println(F("</form>"));
+				  client.println(F("</body>"));
+				  client.println(F("</html>"));
+
                   // reset buffer index and all buffer elements to 0
                   req_index = 0;
                   //StrClear(HTTP_req, REQ_BUF_SZ);
