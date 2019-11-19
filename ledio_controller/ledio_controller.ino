@@ -20,6 +20,8 @@
 #define I2C_TIMEOUT 100
 #define I2C_FASTMODE 1
 
+#define HTTP_REQ_BUF_SZ 250
+
 #include <utils.hpp>
 #include <http_server.hpp>
 
@@ -535,7 +537,7 @@ bool parseFadeTime(const char* reqStr, uint16_t* timersArray)
 {
   int  iArray;
   bool result = false;
-  char formName[] = { "&f =\0" };
+  char formName[] = { "_f =\0" };
   for(byte i = 0; i < NUM_IOS; ++i)
   {
     formName[2] =  i + '1';
@@ -557,7 +559,7 @@ bool parseBright(const char* reqStr, uint8_t* timersArray)
 {
   int  iArray;
   bool result = false;
-  char formName[] = { "&b =\0" };
+  char formName[] = { "_b =\0" };
   for(byte i = 0; i < NUM_IOS; ++i)
   {
     formName[2] =  i + '1';
@@ -608,10 +610,10 @@ void addCustomForms(EthernetClient& client)
   for(byte i = 0; i < NUM_IOS; ++i)
   {
     client.print(F("  Channel "));client.print(i+1);
-    client.print(F("\t<input type=\"text\" name=\"f"));client.print(i+1); client.print(F("\"  maxlength=5 size=5 value=\"")); 
+    client.print(F("\t<input type=\"text\" name=\"_f"));client.print(i+1); client.print(F("\"  maxlength=5 size=5 value=\"")); 
     client.print(boardSettings.fade_time[i]);
     client.print(F("\">"));
-    client.print(F("\t\t<input type=\"text\" name=\"b"));client.print(i+1); client.print(F("\"  maxlength=3 size=3 value=\"")); 
+    client.print(F("\t\t<input type=\"text\" name=\"_b"));client.print(i+1); client.print(F("\"  maxlength=3 size=3 value=\"")); 
     client.print(boardSettings.bright[i]);
     client.println(F("\">"));
   }

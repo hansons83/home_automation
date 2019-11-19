@@ -1,4 +1,4 @@
-
+  
 /*
  Basic MQTT example
 */
@@ -38,7 +38,7 @@
 //#define I2C_SLOWMODE 1
 
 #include <utils.hpp>
-#define HTTP_REQ_BUF_SZ 180
+#define HTTP_REQ_BUF_SZ 200
 #include <http_server.hpp>
 
 SoftWire       sWire = SoftWire();
@@ -240,7 +240,7 @@ void updateCurrentLevel()
  */
 void printStats(byte i)
 {
-#ifdef COVERIO_DEBUG_MODE
+//#ifdef COVERIO_DEBUG_MODE
   static uint16_t counter[4];
   ++counter[i];
   if(counter[i] < 256)
@@ -249,16 +249,16 @@ void printStats(byte i)
 
   //for(byte i = 0; i < 4; ++i)
   {
-    SerialPrint("CH:");
-    SerialPrint(i);
-    SerialPrint(F(",C:"));
-    SerialPrint(blindStateArray[i].currentLevel);
-    SerialPrint(F(",P:"));
-    SerialPrint(blindStateArray[i].currentPos);
-    SerialPrint(F(",T:"));
-    SerialPrintLn(blindStateArray[i].currentTilt);
+    Serial.print("CH:");
+    Serial.print(i);
+    Serial.print(F(",C:"));
+    Serial.print(currentLevel[i]);
+    Serial.print(F(",P:"));
+    Serial.print(currentPos[i]);
+    Serial.print(F(",T:"));
+    Serial.println(currentTilt[i]);
   }
-#endif
+//#endif
 }
 /*
  * 
@@ -274,7 +274,7 @@ void setChannelMoveDir(uint8_t chInd, byte dir)
 {
   byte expectedtState = outputsState;
 
-  expectedtState = (expectedtState & ~(0x03 << chInd)) | (dir << chInd);
+  expectedtState = (expectedtState & ~(0x03 << (chInd*2))) | (dir << (chInd*2));
 
   SerialPrint(F("O:"));
   SerialPrintLnBin(expectedtState);
@@ -287,7 +287,7 @@ void setChannelMoveDir(uint8_t chInd, byte dir)
 }
 byte getChannelMoveDir(uint8_t chInd)
 {
-  return ((outputsState >> chInd) & 0x03);
+  return ((outputsState >> (chInd*2)) & 0x03);
 }
 /*
  * 
@@ -563,7 +563,8 @@ void posMonitor(uint8_t chInd)
   }
   int32_t stateTime = calcTimestampDiff(stateEnterMs[chInd], millis());
   bool    noCurrent = stateTime > 100 && currentLevel[chInd] < 15;
-  if(stateTime >= move_time[chInd] || noCurrent)
+  bool    timeout = stateTime >= move_time[chInd];
+  if((timeout && expectedPos[chInd] != 100 && expectedPos[chInd] != 0) || noCurrent)
   {
     if(noCurrent)
     { 
@@ -1252,7 +1253,7 @@ bool parseTiltTime(const char* reqStr, uint32_t* timersArray)
 {
   int  iArray;
   bool result = false;
-  char formName[] = { "&t =\0" };
+  char formName[] = { "_t =\0" };
   for(byte i = 0; i < 4; ++i)
   {
     formName[2] =  i + '1';
@@ -1273,11 +1274,11 @@ bool parseTiltTime(const char* reqStr, uint32_t* timersArray)
 /*
  * 
  */
-bool parseCalibration(const char* reqStr, bool* flagArray)
+bool parseCalibration(const char* reqStr, volatile bool * flagArray)
 {
   int  iArray;
   bool result = false;
-  char formName[] = { "&c =\0" };
+  char formName[] = { "_c =\0" };
   for(byte i = 0; i < 4; ++i)
   {
     formName[2] =  i + '1';
@@ -1334,8 +1335,8 @@ bool processCustomParams(const char* reqStr)
     {
       Serial.print(boardSettings.tilt_time[i]);
       if(i<3)Serial.print(F(","));
+      else Serial.println(F(""));
     }
-    Serial.println(F(""));
     result = true;
   }
   if(parseCalibration(reqStr, requestedCalibration))
@@ -1345,8 +1346,8 @@ bool processCustomParams(const char* reqStr)
     {
       Serial.print(requestedCalibration[i]);
       if(i<3)Serial.print(F(","));
+      else Serial.println(F(""));
     }
-    Serial.println(F(""));
   }
   return result;
 }
@@ -1359,18 +1360,15 @@ void addCustomForms(EthernetClient& client)
   for(byte i = 0; i < 4; ++i)
   {
     client.print(F("  Channel "));client.print(i+1);
-    //client.print(F("\t<input type=\"text\" name=\"fo"));client.print(i+1); client.print(F("\"  maxlength=8 size=8 value=\"")); 
     client.print(F("\t"));
     client.print(boardSettings.open_time[i]);
-    //client.print(F("\">"));
-    //client.print(F("\t\t<input type=\"text\" name=\"fc"));client.print(i); client.print(F("\"  maxlength=8 size=8 value=\"")); 
     client.print(F("\t\t"));
     client.print(boardSettings.close_time[i]);
     //client.print(F("\">"));
-    client.print(F("\t\t<input type=\"text\" name=\"t"));client.print(i+1); 
+    client.print(F("\t\t<input type=\"text\" name=\"_t"));client.print(i+1); 
     client.print(F("\" maxlength=8 size=8 value=\"")); client.print(boardSettings.tilt_time[i]);
     client.print(F("\">"));
-    client.print(F("\t<input type=\"checkbox\" name=\"c")); client.print(i+1);
+    client.print(F("\t<input type=\"checkbox\" name=\"_c")); client.print(i+1);
     client.println(F("\" value=\"1\">"));
   }
 
@@ -1444,7 +1442,7 @@ void loop()
     }
   }
   
-  handleMqttClient();
+  //handleMqttClient();
   
 #ifndef COVERIO_DEBUG_MODE
   HttpResult httpRes = httpHandle2(ethServer, customHandlers, Ethernet.localIP());

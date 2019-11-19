@@ -11,7 +11,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER F("1.2.1")
+#define SOFT_VER F("1.2.2")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -52,14 +52,14 @@ static struct StoredSettings{
 
 static const uint8_t TOPIC_ID_START_INDEX = 6;
 
-static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 24;
-char outputCommandTopic[]     = { "RELIO/\0\0\0\0\0\0\0\0/cmd/out/+\0" };
+static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 23;
+char outputCommandTopic[] = { "RELIO/\0\0\0\0\0\0\0\0/cmd/out/+\0" };
 
 static const uint8_t TOPIC_IN_STATE_CHANNEL_INDEX = 24;
-char inputStateTopic[]  = { "RELIO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
+char inputStateTopic[]    = { "RELIO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
 
 static const uint8_t TOPIC_OUT_STATE_CHANNEL_INDEX = 25;
-char outputStateTopic[] = { "RELIO/\0\0\0\0\0\0\0\0/state/out/ \0"  };
+char outputStateTopic[]   = { "RELIO/\0\0\0\0\0\0\0\0/state/out/ \0"  };
 
 char clientId[] = { "RELIO_\0\0\0\0\0\0\0\0\0"  };
 
@@ -385,7 +385,7 @@ bool parseTimers(const char* reqStr, uint32_t* timersArray)
 {
   int  iArray;
   bool result = false;
-  char formName[] = { "&t =\0" };
+  char formName[] = { "_t =\0" };
   for(byte i = 0; i < NUM_IOS; ++i)
   {
     formName[2] =  i + '1';
@@ -425,7 +425,7 @@ void addCustomForms(EthernetClient& client)
   for(byte i = 0; i < NUM_IOS; ++i)
   {
     client.print(F("\t  Channel "));client.print(i+1);
-    client.print(F(" <input type=\"text\" name=\"t"));client.print(i+1); client.print(F("\"  maxlength=3 size=3 value=\"")); 
+    client.print(F(" <input type=\"text\" name=\"_t"));client.print(i+1); client.print(F("\"  maxlength=3 size=3 value=\"")); 
     client.print(boardSettings.timers[i]);
     client.println(F("\">"));
   }
