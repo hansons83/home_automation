@@ -10,7 +10,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER F("1.2.1")
+#define SOFT_VER F("1.2.3")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -35,7 +35,7 @@ OneWire        ds2401(A1);
 
 #define EEPROM_VERSION_OFFSET  0
 #define EEPROM_SETTINGS_OFFSET 1
-#define EEPROM_VERSION         0x55
+#define EEPROM_VERSION         0x54
 
 #define ETH_SHIELD_RESET_PIN   A0
 
@@ -62,6 +62,9 @@ char inputStateTopic[]  = { "LEDIO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
 static const uint8_t TOPIC_OUT_STATE_CHANNEL_INDEX = 25;
 char outputStateTopic[] = { "LEDIO/\0\0\0\0\0\0\0\0/state/out/ \0"  };
 
+static const uint8_t TOPIC_OUT_BSTATE_CHANNEL_INDEX = 26;
+char outputBStateTopic[] = { "LEDIO/\0\0\0\0\0\0\0\0/bstate/out/ \0"  };
+
 char clientId[] = { "LEDIO_\0\0\0\0\0\0\0\0\0"  };
 
 // Update these with values suitable for your network.
@@ -74,20 +77,44 @@ static  byte    lastinputsState = 0;
 
 
 static  float   outputCurrentVal[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
+static  byte    outputCurrentBright[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  uint8_t outputExpectedVal[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  int8_t  outputStepSign[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  uint8_t outputsStateToPublish = 0;
 static  uint8_t LEDOUT[2] = {0, 0};
 
-const unsigned char PROGMEM CIEL8[50] = {
- 0, 1, 1, 2, 2, 3, 4, 5, 6, 7, 
-  8, 9, 11, 13, 14, 17, 19, 21, 24, 27, 
-  30, 33, 37, 41, 45, 49, 54, 59, 64, 69, 
-  75, 81, 88, 95, 102, 109, 117, 125, 134, 143, 
-  152, 162, 172, 182, 193, 205, 217, 229, 242, 255, 
+#define PWM_LED_BRIGHT_MAX_VAL 255
+#define PWM_LED_BRIGHT_MIN_VAL 0
+/*
+const unsigned char PROGMEM CIEL8[256] = {
+  0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+  1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 
+  2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 
+  3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 
+  4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 
+  6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 
+  7, 7, 7, 8, 8, 8, 8, 8, 8, 9, 
+  9, 9, 9, 10, 10, 10, 10, 10, 11, 11, 
+  11, 11, 12, 12, 12, 13, 13, 13, 14, 14, 
+  14, 14, 15, 15, 15, 16, 16, 17, 17, 17, 
+  18, 18, 19, 19, 19, 20, 20, 21, 21, 22, 
+  22, 23, 23, 24, 24, 25, 26, 26, 27, 27, 
+  28, 29, 29, 30, 31, 31, 32, 33, 34, 34, 
+  35, 36, 37, 38, 38, 39, 40, 41, 42, 43, 
+  44, 45, 46, 47, 48, 49, 50, 51, 53, 54, 
+  55, 56, 57, 59, 60, 61, 63, 64, 66, 67, 
+  69, 70, 72, 73, 75, 77, 79, 80, 82, 84, 
+  86, 88, 90, 92, 94, 96, 98, 100, 103, 105, 
+  107, 110, 112, 115, 117, 120, 123, 125, 128, 131, 
+  134, 137, 140, 143, 147, 150, 153, 157, 160, 164, 
+  167, 171, 175, 179, 183, 187, 191, 196, 200, 205, 
+  209, 214, 219, 224, 229, 234, 239, 244, 250, 255, 
+  255, 255, 255, 255, 255
 };
-#define PWM_STEP_VALS sizeof(CIEL8)
-
+*/
 #define PCA9634_MODE2_NMOS_INV_VAL (0<<4)
 #define PCA9634_MODE2_NMOS_OUTDRV_VAL (1<<2)
 
@@ -140,6 +167,24 @@ uint8_t PCA9634_setup(SoftWire& wire)
 }
 uint8_t PCA9634_write_pwm(SoftWire& wire, uint8_t ledInd, uint8_t val)
 {
+  float calc = val;
+  calc = calc * calc * 0.003921568627f;////pgm_read_byte_near(CIEL8 + val);
+  if(calc > 255)
+    calc = 255;
+
+  val = (int)round(calc);
+  //Serial.println(val);
+  
+  if(outputCurrentBright[ledInd] == calc)
+  {
+    return 0;
+  }
+  outputCurrentBright[ledInd] = calc;
+  
+  //Serial.println(calc);
+
+  //Serial.print("Led: "); Serial.print(ledInd); Serial.print(" Write: "); Serial.println(val);
+  
   uint8_t error = 0;
   uint8_t regOffset = (ledInd / 4);
   uint8_t ledOffset = (ledInd % 4)*2;
@@ -150,11 +195,11 @@ uint8_t PCA9634_write_pwm(SoftWire& wire, uint8_t ledInd, uint8_t val)
   Serial.print(" Led offset: ");
   Serial.println(ledOffset);
   */
-  if(val >= 100) // Write LEDOUT register to turn on led
+  if(val >= PWM_LED_BRIGHT_MAX_VAL) // Write LEDOUT register to turn on led
   {
     ledOutVal = ledOutVal & ~(0x03 << ledOffset) | (0x01 << ledOffset);
   }
-  else if(val < 1)
+  else if(val == PWM_LED_BRIGHT_MIN_VAL)
   {
     ledOutVal = ledOutVal & ~(0x03 << ledOffset);
   }
@@ -170,8 +215,6 @@ uint8_t PCA9634_write_pwm(SoftWire& wire, uint8_t ledInd, uint8_t val)
     wire.write( LEDOUT[regOffset]);
     error |= wire.endTransmission( );
   }
-  
-  val = pgm_read_byte_near(CIEL8+(val/2));
   wire.beginTransmission( PCA9634_ADDRESS );
   wire.write( 0x02 + ledInd );
   wire.write( val );
@@ -212,6 +255,10 @@ void setOutputState(int ledIndex, uint8_t bright)
     outputStepSign[ledIndex] = 1;
   }
   outputExpectedVal[ledIndex] = bright;
+  if(bright != 0)
+  {
+    set_bit(outputsStateToPublish, ledIndex);
+  }
   interrupts();
 }
 void toggleOutputState(int ledIndex, uint8_t bright)
@@ -246,11 +293,11 @@ void callback(char* topic, byte* payload, unsigned int length)
     Serial.println(F("Wrong LED"));
     return;
   }
-  if(length == 2 && memcmp(payload, "ON", 2) == 0)
+  if(length == 2 && (memcmp(payload, "ON", 2) == 0 || memcmp(payload, "on", 2) == 0))
   {
-    bright = 100;
+    bright = boardSettings.bright[ledNr-1];
   }
-  else if(length == 3 && memcmp(payload, "OFF", 3) == 0)
+  else if(length == 3 && (memcmp(payload, "OFF", 3) == 0 || memcmp(payload, "OFF", 3) == 0))
   {
     bright = 0;
   }
@@ -258,7 +305,7 @@ void callback(char* topic, byte* payload, unsigned int length)
   {
     bright = atoi((const char*)payload);
   }
-  if(bright < 0 || bright > 100)
+  if(bright < PWM_LED_BRIGHT_MIN_VAL || bright > PWM_LED_BRIGHT_MAX_VAL)
   {
     Serial.println(F("Wrong VAL"));
     return;
@@ -274,6 +321,7 @@ void callback(char* topic, byte* payload, unsigned int length)
 
 void readInputsUpdateOutputsHandler()
 {
+  bool publishState = false;
   for(uint8_t i = 0; i < NUM_IOS; ++i)
   {
     inputCounters[i] <<= 1;
@@ -303,7 +351,7 @@ void readInputsUpdateOutputsHandler()
 
     if(outputCurrentVal[i] != outputExpectedVal[i])
     {
-      outputCurrentVal[i] += (200.0f / (float)boardSettings.fade_time[i]) * outputStepSign[i];
+      outputCurrentVal[i] += (500.0f / (float)boardSettings.fade_time[i]) * outputStepSign[i];
       if(outputStepSign[i] > 0)
       {
         if(outputCurrentVal[i] >= outputExpectedVal[i])
@@ -320,7 +368,7 @@ void readInputsUpdateOutputsHandler()
           set_bit(outputsStateToPublish, i);
         }
       }
-      PCA9634_write_pwm(sWire, i, outputCurrentVal[i]);
+      PCA9634_write_pwm(sWire, i, (byte)outputCurrentVal[i]);
     }
 
   }
@@ -352,16 +400,18 @@ void checkOutputsAndPublish(PubSubClient& client)
     if(get_bit(currentOutputsStateToPublish, i))
     {
       outputStateTopic[TOPIC_OUT_STATE_CHANNEL_INDEX] = i + '1';
-      if(outputCurrentVal[i] != 0)
+      outputBStateTopic[TOPIC_OUT_BSTATE_CHANNEL_INDEX] = i + '1';
+      char buffer[7]; 
+      itoa((int)outputCurrentVal[i], buffer, 10);
+      publishMsg(client, (const char*)outputBStateTopic, buffer);
+      
+      if(outputExpectedVal[i] == 0)
       {
-        char buffer[7]; 
-        itoa((int)outputCurrentVal[i], buffer, 10);
-        
-        publishMsg(client, (const char*)outputStateTopic, buffer);
+        publishMsg(client, (const char*)outputStateTopic, "OFF");
       }
       else
       {
-        publishMsg(client, (const char*)outputStateTopic, "OFF");
+        publishMsg(client, (const char*)outputStateTopic, "ON");
       }
     }
   }
@@ -417,8 +467,8 @@ void setup()
     memset(&boardSettings, 0, sizeof(boardSettings));
     for(byte i = 0; i < NUM_IOS; ++i)
     {
-      boardSettings.fade_time[i] = 200;
-      boardSettings.bright[i] = 100;
+      boardSettings.fade_time[i] = 500;
+      boardSettings.bright[i] = 255;
     }
     
     EEPROM.write(EEPROM_VERSION_OFFSET, EEPROM_VERSION);
@@ -434,6 +484,7 @@ void setup()
     byteToHexStr(mac[i+2], outputCommandTopic + (TOPIC_ID_START_INDEX + i*2));
     byteToHexStr(mac[i+2], inputStateTopic + (TOPIC_ID_START_INDEX + i*2));
     byteToHexStr(mac[i+2], outputStateTopic + (TOPIC_ID_START_INDEX + i*2));
+    byteToHexStr(mac[i+2], outputBStateTopic + (TOPIC_ID_START_INDEX + i*2));
     byteToHexStr(mac[i+2], clientId + (TOPIC_ID_START_INDEX + i*2));
   }
   Serial.println(outputCommandTopic);
@@ -510,6 +561,7 @@ void handleMqttClient()
         Serial.print(F(" sub= "));
         Serial.println(outputCommandTopic);
         mqttClient.subscribe(outputCommandTopic);
+        inputsStateToPublish = outputsStateToPublish = 0xFF;
       }
       else
       {

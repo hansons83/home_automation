@@ -3,7 +3,7 @@
 //#include <TinyWireS.h>
 
 const byte LED_PIN = 8;
-const byte SLAVE_ADDR = 0x22;
+const byte SLAVE_ADDR = 0x22 ;
 const byte NUM_BYTES = 4;
 
 int16_t  minVal[NUM_BYTES] = {512, 512, 512, 512};

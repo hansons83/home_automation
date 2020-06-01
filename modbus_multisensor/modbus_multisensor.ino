@@ -17,9 +17,9 @@
 //#define DEBUG_SERIAL
 
 static const int16_t SW_VERSION = 0x0901;
-static const uint8_t EEPROM_VERSION = 0x55;
+static const uint8_t EEPROM_VERSION = 0x56;
 static const uint8_t MODBUS_DEFAULT_ID = 64;
-static const uint8_t MODBUS_CLIENT_IND = 4;
+static const uint8_t MODBUS_CLIENT_IND = 15;
 
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
@@ -67,7 +67,7 @@ struct Registers
     int16_t co2;          //4
     int16_t lux;          //5
     
-    int16_t inputs_state; //6
+    int16_t inputs_state; //6 97 coil
     
     int16_t inputs_pulses[INPUTS_NUM]; //7+INPUTS_NUM
     //int16_t in1_pulses;   //7
@@ -246,8 +246,6 @@ static const byte EEPROM_ID_OFFSET = 1;
 void setup() 
 {
   ser_println("Modbus sensor ver: ", SW_VERSION, "", "");
-  // Must be changed during firs flashing
-  byte modbusID = MODBUS_DEFAULT_ID + 1;
 /*
  * 
  */
