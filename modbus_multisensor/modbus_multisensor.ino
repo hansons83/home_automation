@@ -16,10 +16,10 @@
 
 //#define DEBUG_SERIAL
 
-static const int16_t SW_VERSION = 0x0901;
-static const uint8_t EEPROM_VERSION = 0x56;
+static const int16_t SW_VERSION = 0x0A01;
+static const uint8_t EEPROM_VERSION = 0x55;
 static const uint8_t MODBUS_DEFAULT_ID = 64;
-static const uint8_t MODBUS_CLIENT_IND = 15;
+static const uint8_t MODBUS_CLIENT_IND = 10;
 
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
@@ -52,6 +52,8 @@ static const uint8_t ANALOG_INPUTS[] = { A3, A2 };
 
 static const byte LIGHT_SENSOR_PIN = A6;
 
+static uint8_t modbusID = 0;
+
 bool BmeAvailable = false;
 bool BH1750Available = false;
 bool DsAvailable = false;
@@ -66,28 +68,23 @@ struct Registers
     int16_t pressure;     //3
     int16_t co2;          //4
     int16_t lux;          //5
+    int16_t lux_prec;     //6
     
-    int16_t inputs_state; //6 97 coil
+    int16_t inputs_state; //7 97 coil
     
-    int16_t inputs_pulses[INPUTS_NUM]; //7+INPUTS_NUM
-    //int16_t in1_pulses;   //7
-    //int16_t in2_pulses;   //8
-    //int16_t in3_pulses;   //9
-    //int16_t in4_pulses;   //10
-    //int16_t in5_pulses;   //11
-    //int16_t in6_pulses;   //12
+    int16_t inputs_pulses[INPUTS_NUM]; //8+INPUTS_NUM
     
-    uint32_t pulses_time;   //13
+    uint32_t pulses_time;   //14
     
-    int16_t in1_value;    //18
-    int16_t in2_value;    //19
-    int16_t in9_value;    //20
-    int16_t in10_value;   //21
+    int16_t in1_value;    //19
+    int16_t in2_value;    //20
+    int16_t in9_value;    //21
+    int16_t in10_value;   //22
     
-    int16_t oneWireTemp1; //22
-    int16_t oneWireTemp2; //23
-    int16_t oneWireTemp3; //24
-    int16_t oneWireTemp4; //25
+    int16_t oneWireTemp1; //23
+    int16_t oneWireTemp2; //24
+    int16_t oneWireTemp3; //25
+    int16_t oneWireTemp4; //26
 }
 registers;
 
@@ -165,7 +162,7 @@ NeoSWSerial       mhzSerial(CO2_SERIAL_RX_PIN, CO2_SERIAL_TX_PIN);
 NeoSWSerial       debugSerial(DEBUG_SERIAL_RX_PIN, DEBUG_SERIAL_TX_PIN);
 #endif
 BME280I2C         bme;
-//BH1750            bh1750;
+BH1750            bh1750;
 //DallasTemperature ds(&oneWire);
 #ifdef DEBUG_SERIAL
 #define ser_println(a, b, c, d) do{ debugSerial.begin(DEBUG_SERIAL_BAUNDRATE); debugSerial.print(a);debugSerial.print(b);debugSerial.print(c);debugSerial.println(d); debugSerial.end(); }while(0)
@@ -293,13 +290,13 @@ void setup()
   if(!BmeAvailable){
     ser_println("Could not find BME280 sensor!", "", "", "");
   }
-  /*
+
   // Start up the library
   BH1750Available = bh1750.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
   if(!BH1750Available){
-    ser_println("Could not find BH1750 sensor!");
+    ser_println("Could not find BH1750 sensor!", "", "", "");
   }
-  */
+
   mhzSerial.begin(CO2_SERIAL_BAUNDRATE);
   MhzAvailable = true;
   //MhzAvailable = mhz.setRange(MHZ19_RANGE_5000) == MHZ19_RESULT_OK;
@@ -361,11 +358,7 @@ void loop()
         registers.humidity = (int16_t)(hum * 10.0f);
         registers.pressure = (int16_t)(pres);
       }
-      /*if(BH1750Available)
-      {
-        regData.flux = bh1750.readLightLevel();
-      }
-      if(DsAvailable)
+      /*if(DsAvailable)
       {
         registers.temp = (float)((int)(ds.getTempCByIndex(0) * 10.0f)) / 10.0f;
         ds.requestTemperatures();
@@ -389,6 +382,11 @@ void loop()
       float ldrResistance = (REF_RESISTANCE * (ADC_REF_VOLTAGE - resVoltage)) / resVoltage;
     
       registers.lux = (int16_t)(LUX_CALC_SCALAR * pow(ldrResistance, LUX_CALC_EXPONENT) * 10.0f);
+      
+      if(BH1750Available)
+      {
+        registers.lux_prec = bh1750.readLightLevel();
+      }
     }
     /*sinceLastCheck = calcTimestampDiff(lastMillisPrint, millis());
     if(sinceLastCheck > 10000)
