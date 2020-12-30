@@ -11,7 +11,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER F("1.1.1")
+#define SOFT_VER F("1.2.1")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -37,11 +37,13 @@ static const uint8_t EEPROM_VERSION         = 0x55;
 static const uint8_t ETH_SHIELD_RESET_PIN   = A0;
 
 static const uint8_t INPUT_CHECK_MS = 2;
-static const uint8_t NUM_IOS = 8;
+static const uint8_t NUM_LOCAL_IOS = 8;
+static const uint8_t NUM_IOS = 24;
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
 static const uint8_t INPUT_PINS_START = 2;
-static const uint8_t MCP27008_ADRESS = 0x27;
+static const uint8_t MCP27008_ADRESS1 = 0x26;
+static const uint8_t MCP27008_ADRESS2 = 0x27;
 
 static struct StoredSettings{
   MqttSettings mqtt;
@@ -49,29 +51,74 @@ static struct StoredSettings{
 
 static const uint8_t TOPIC_ID_START_INDEX = 5;
 static const uint8_t TOPIC_IN_STATE_CHANNEL_INDEX = 23;
-char inputStateTopic[]    = { "INIO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
+char inputStateTopic[]    = { "INIO/\0\0\0\0\0\0\0\0/state/in/  \0"  };
 
 char clientId[] = { "INIO_\0\0\0\0\0\0\0\0\0"  };
 
 // Update these with values suitable for your network.
 byte mac[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-static  uint8_t  inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
-static  byte     inputsState = 0;
-static  byte     inputsStateToPublish = 0xFF;
-static  byte     lastinputsState = 0;
+static  uint8_t      inputCounters[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static  uint32_t     inputsState = 0;
+static  uint32_t     inputsStateToPublish = 0xFFFFFF;
+static  uint32_t     lastinputsState = 0;
 
 
 void callback(char* topic, byte* payload, unsigned int length)
 {
 }
 
+uint8_t MCP27008_setup_read(SoftWire& wire, byte adress)
+{
+  uint8_t error;
+  wire.beginTransmission(adress);
+  wire.write(0x00);
+  error = wire.endTransmission();
+}
+uint8_t MCP27008_read(SoftWire& wire, byte adress, byte& value)
+{
+  uint8_t error;
+  wire.beginTransmission(adress);
+  wire.write(0x09);
+  error = wire.endTransmission();
+  if(error != 0)
+  {
+    Serial.print(F("MCP write er: "));
+    Serial.println(error);
+  }
+  else
+  {
+    wire.requestFrom( adress, 1, 1 );
+    while(wire.available() < 1);
+    value = wire.read();
+  }
+  return error;
+}
+
 void readInputsInterruptHandler()
 {
+  uint32_t pinStates = 0;
+  byte ios;
+  
+  MCP27008_read(sWire, MCP27008_ADRESS2, ios);
+  pinStates |= ~ios;
+  pinStates <<= 8;
+  MCP27008_read(sWire, MCP27008_ADRESS1, ios);
+  pinStates |= ~ios;
+  pinStates <<= 8;
+
+  for(byte i = 0; i < NUM_LOCAL_IOS; ++i)
+  {
+    if(digitalRead(INPUT_PINS_START + i) == LOW)
+    {
+      pinStates |= 1 << i;
+    }
+  }
+  
   for(byte i = 0; i < NUM_IOS; ++i)
   {
     inputCounters[i] <<= 1;
-    if(digitalRead(INPUT_PINS_START + i) == LOW)
+    if(get_bit_l(pinStates, i) == HIGH)
     {
       inputCounters[i] += 1;
     }
@@ -81,15 +128,17 @@ void readInputsInterruptHandler()
     }
     if(inputCounters[i] == INPUT_HIGH_STATE)
     {
-      set_bit(inputsState, i);
+      set_bit_l(inputsState, i);
     }
     else if(inputCounters[i] == INPUT_LOW_STATE)
     {
-      clear_bit(inputsState, i);
+      clear_bit_l(inputsState, i);
     }
-    if(get_bit(lastinputsState, i) != get_bit(inputsState, i))
-      set_bit(inputsStateToPublish, i);
+    if(get_bit_l(lastinputsState, i) != get_bit_l(inputsState, i))
+      set_bit_l(inputsStateToPublish, i);
   }
+  
+  
   lastinputsState = inputsState;
 }
 void publishMsg(PubSubClient& client, const char* topic, const char* payload)
@@ -105,20 +154,23 @@ void publishMsg(PubSubClient& client, const char* topic, const char* payload)
 void checkInputsAndPublish(PubSubClient& client)
 {
   noInterrupts();
-  byte currentInputsStateToPublish = inputsStateToPublish;
-  byte currentInputsState = inputsState;
+  uint32_t currentInputsStateToPublish = inputsStateToPublish;
+  uint32_t currentInputsState = inputsState;
   inputsStateToPublish = 0;
   interrupts();
   
   if(currentInputsStateToPublish == 0)
     return;
+
+  Serial.println(currentInputsStateToPublish, HEX);
   
   for(byte i = 0; i < NUM_IOS; ++i)
   {
-    if(get_bit(currentInputsStateToPublish, i))
+    if(get_bit_l(currentInputsStateToPublish, i))
     {
-      inputStateTopic[TOPIC_IN_STATE_CHANNEL_INDEX] = i + '1';
-      if(get_bit(currentInputsState, i))
+      inputStateTopic[TOPIC_IN_STATE_CHANNEL_INDEX] =  ((i+1)/10) + '0';
+      inputStateTopic[TOPIC_IN_STATE_CHANNEL_INDEX+1] = ((i+1)%10) + '0';
+      if(get_bit_l(currentInputsState, i))
       {
         publishMsg(client, (const char*)inputStateTopic, "ON");
       }
@@ -139,9 +191,9 @@ void setup()
   Serial.print(F("INIO ver: "));
   Serial.println(SOFT_VER);
  
-  for(byte i = 0; i < NUM_IOS; ++i)
+  for(byte i = 0; i < NUM_LOCAL_IOS; ++i)
   {
-    pinMode(INPUT_PINS_START + i, INPUT_PULLUP);      // sets the switch sensor digital pin as input
+    pinMode(INPUT_PINS_START + i, INPUT);      // sets the switch sensor digital pin as input
   }
   
   pinMode(ETH_SHIELD_RESET_PIN, OUTPUT);
@@ -179,6 +231,25 @@ void setup()
   Serial.println(boardSettings.mqtt.mqtt_password);
   
   sWire.begin();
+
+  scanI2C(sWire);
+
+  Serial.flush();
+
+//  byte val;
+//  for(byte i = 0; i < 40000; ++i)
+//  {
+//    MCP27008_read(sWire, MCP27008_ADRESS1, val);
+//    
+//    Serial.print(F("Byte 1: "));
+//    Serial.println(val, HEX);
+//    
+//    MCP27008_read(sWire, MCP27008_ADRESS2, val);
+//  
+//    Serial.print(F("Byte 2: "));
+//    Serial.println(val, HEX);
+//    delay(1000);
+//  }
   
   MsTimer2::set(2, readInputsInterruptHandler);
   MsTimer2::start();
@@ -231,15 +302,17 @@ void handleMqttClient()
     mqttClient.loop();
   }
 }
-bool processCustomParams(char* data, uint16_t size)
+bool processCustomParams(char* data)
 {
   return false;
 }
+void addCustomForms(EthernetClient& client);
+
 CustomHandlers customHandlers = 
 {
   .customProcess = processCustomParams,
   .customForms = addCustomForms,
-  .mqtt_ptr = &boardSettings.mqtt
+  .mqtt_ptr = &boardSettings.mqtt,
 };
 
 void addCustomForms(EthernetClient& client)

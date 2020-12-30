@@ -54,7 +54,9 @@ static struct StoredSettings{
 static const uint8_t TOPIC_ID_START_INDEX = 6;
 
 static const uint8_t TOPIC_CMD_CHANNEL_INDEX = 23;
+static const uint8_t TOPIC_CMD_TYPE_START_INDEX = 15;
 char outputCommandTopic[]     = { "LEDIO/\0\0\0\0\0\0\0\0/cmd/out/+\0" };
+char outputRawCommandTopic[]  = { "LEDIO/\0\0\0\0\0\0\0\0/raw/out/+\0" };
 
 static const uint8_t TOPIC_IN_STATE_CHANNEL_INDEX = 24;
 char inputStateTopic[]  = { "LEDIO/\0\0\0\0\0\0\0\0/state/in/ \0"  };
@@ -82,6 +84,7 @@ static  uint8_t outputExpectedVal[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  int8_t  outputStepSign[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  uint8_t outputsStateToPublish = 0;
 static  uint8_t LEDOUT[2] = {0, 0};
+static  bool    useBrightCurve = true;
 
 #define PWM_LED_BRIGHT_MAX_VAL 255
 #define PWM_LED_BRIGHT_MIN_VAL 0
@@ -168,12 +171,15 @@ uint8_t PCA9634_setup(SoftWire& wire)
 uint8_t PCA9634_write_pwm(SoftWire& wire, uint8_t ledInd, uint8_t val)
 {
   float calc = val;
-  calc = calc * calc * 0.003921568627f;////pgm_read_byte_near(CIEL8 + val);
-  if(calc > 255)
-    calc = 255;
-
-  val = (int)round(calc);
-  //Serial.println(val);
+  if(useBrightCurve)
+  {
+    calc = calc * calc * 0.003921568627f;////pgm_read_byte_near(CIEL8 + val);
+    if(calc > 255)
+      calc = 255;
+  
+    val = (int)round(calc);
+    //Serial.println(val);
+  }
   
   if(outputCurrentBright[ledInd] == calc)
   {
@@ -316,6 +322,11 @@ void callback(char* topic, byte* payload, unsigned int length)
   Serial.println(bright);
   //outputCurrentVal[ledNr-1] = PCA9634_read(ledNr-1);
   //Serial.println(outputCurrentVal[ledNr-1]);
+  if(topic[TOPIC_CMD_TYPE_START_INDEX] == 'r')
+    useBrightCurve = false;
+  else
+    useBrightCurve = true;
+    
   setOutputState(ledNr-1, bright);
 }
 
@@ -482,6 +493,7 @@ void setup()
   for (byte i = 0; i < 4; i++)
   {
     byteToHexStr(mac[i+2], outputCommandTopic + (TOPIC_ID_START_INDEX + i*2));
+    byteToHexStr(mac[i+2], outputRawCommandTopic + (TOPIC_ID_START_INDEX + i*2));
     byteToHexStr(mac[i+2], inputStateTopic + (TOPIC_ID_START_INDEX + i*2));
     byteToHexStr(mac[i+2], outputStateTopic + (TOPIC_ID_START_INDEX + i*2));
     byteToHexStr(mac[i+2], outputBStateTopic + (TOPIC_ID_START_INDEX + i*2));
@@ -559,7 +571,10 @@ void handleMqttClient()
       if (mqttClient.connect(clientId, boardSettings.mqtt.mqtt_username, boardSettings.mqtt.mqtt_password))
       {
         Serial.print(F(" sub= "));
-        Serial.println(outputCommandTopic);
+        Serial.print(outputCommandTopic);
+        Serial.print(F(", "));
+        Serial.println(outputRawCommandTopic);
+        mqttClient.subscribe(outputRawCommandTopic);
         mqttClient.subscribe(outputCommandTopic);
         inputsStateToPublish = outputsStateToPublish = 0xFF;
       }

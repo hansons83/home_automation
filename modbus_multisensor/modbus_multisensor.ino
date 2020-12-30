@@ -18,8 +18,7 @@
 
 static const int16_t SW_VERSION = 0x0A01;
 static const uint8_t EEPROM_VERSION = 0x55;
-static const uint8_t MODBUS_DEFAULT_ID = 64;
-static const uint8_t MODBUS_CLIENT_IND = 10;
+static const uint8_t MODBUS_DEFAULT_ID = 71;
 
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
@@ -109,11 +108,11 @@ void readInputsInterruptHandler(uint32_t elapsedus)
     }
     if(inputCounters[i] == INPUT_HIGH_STATE)
     {
-      set_bit(registers.inputs_state, i);
+      clear_bit(registers.inputs_state, i);
     }
     else if(inputCounters[i] == INPUT_LOW_STATE)
     {
-      clear_bit(registers.inputs_state, i);
+      set_bit(registers.inputs_state, i);
     }
     if(get_bit(registers.inputs_state, i) != get_bit(lastinputsState, i))
     {
@@ -253,7 +252,7 @@ void setup()
   {
     Serial.println(F("Clearing EEPROM!"));
     EEPROM.write(EEPROM_VERSION_OFFSET, EEPROM_VERSION);
-    EEPROM.write(EEPROM_ID_OFFSET, MODBUS_DEFAULT_ID + MODBUS_CLIENT_IND);
+    EEPROM.write(EEPROM_ID_OFFSET, MODBUS_DEFAULT_ID);
   }
   modbusID = EEPROM.read(EEPROM_ID_OFFSET);
 /*
