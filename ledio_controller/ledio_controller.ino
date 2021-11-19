@@ -10,7 +10,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER F("1.2.3")
+#define SOFT_VER F("1.3.3")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -354,6 +354,7 @@ void readInputsUpdateOutputsHandler()
     }
     if(get_bit(inputsState, i) != get_bit(lastinputsState, i))
     {
+      set_bit(inputsStateToPublish, i);
       if(get_bit(inputsState, i))
       {
         toggleOutputState(i, boardSettings.bright[i]);

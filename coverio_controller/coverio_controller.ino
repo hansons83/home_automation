@@ -13,7 +13,7 @@
 #include <EEPROM.h>
 
 
-#define SOFT_VER F("1.2.2")
+#define SOFT_VER F("1.3.2")
 
 #ifdef COVERIO_DEBUG_MODE
 #define SerialPrint(x) Serial.print(x)
@@ -458,7 +458,7 @@ void idleEnter(uint8_t chInd)
 void idleMonitor(uint8_t chInd)
 {
   // Do nothing if we are not at least 1000ms in idle.
-  if(calcTimestampDiff(stateEnterMs[chInd], millis()) < 1000)
+  if(calcTimestampDiff(stateEnterMs[chInd], millis()) < 300)
   {
     return;
   }
@@ -565,7 +565,7 @@ void posMonitor(uint8_t chInd)
     return;
   }
   int32_t stateTime = calcTimestampDiff(stateEnterMs[chInd], millis());
-  bool    noCurrent = stateTime > 100 && noCurrentFlow(chInd);
+  bool    noCurrent = stateTime > 200 && noCurrentFlow(chInd);
   bool    timeout = stateTime >= move_time[chInd];
   if((timeout && expectedPos[chInd] != 100 && expectedPos[chInd] != 0) || noCurrent)
   {
@@ -645,7 +645,7 @@ void tiltMonitor(uint8_t chInd)
     return;
   }
   int32_t stateTime = calcTimestampDiff(stateEnterMs[chInd], millis());
-  bool    noCurrent = stateTime > 100 && noCurrentFlow(chInd);
+  bool    noCurrent = stateTime > 200 && noCurrentFlow(chInd);
   if(stateTime >= tilt_time[chInd] || noCurrent)
   {
     if(noCurrent)
@@ -696,8 +696,8 @@ void calibrateEnter(uint8_t chInd)
       calibrationStep[chInd] = 1;
       SerialPrintLn(F("0-1"));
       break;
-    case 1: // Wait 100ms
-      if(++calibrationCounter[chInd] >= 50)
+    case 1: // Wait 200ms
+      if(++calibrationCounter[chInd] >= 100)
       {
         calibrationStep[chInd] = 2;
         SerialPrintLn(F("1-2"));
@@ -728,8 +728,8 @@ void calibrateEnter(uint8_t chInd)
       calibrationStep[chInd] = 5;
       SerialPrintLn(F("4-5"));
     break;
-    case 5: // Wait 100ms, measure current to check if moving
-      if(++calibrationCounter[chInd] >= 50)
+    case 5: // Wait 200ms, measure current to check if moving
+      if(++calibrationCounter[chInd] >= 100)
       {
         calibrationStep[chInd] = 6;
         SerialPrintLn(F("5-6"));
@@ -759,8 +759,8 @@ void calibrateEnter(uint8_t chInd)
         SerialPrint(F("7-8"));
       }
     break;
-    case 8:  // Wait 100ms, measure current to check if moving
-      if(++calibrationCounter[chInd] >= 50)
+    case 8:  // Wait 200ms, measure current to check if moving
+      if(++calibrationCounter[chInd] >= 100)
       {
         calibrationStep[chInd] = 9;
         SerialPrintLn(F("8-9"));

@@ -14,11 +14,12 @@
 #include <BH1750.h>
 #include <DallasTemperature.h>
 
-//#define DEBUG_SERIAL
+//#define DEBUG_SERIAL_ENABLED
+//#define DEBUG_LED_ENABLED
 
-static const int16_t SW_VERSION = 0x0A01;
+static const int16_t SW_VERSION = 0x0D02;
 static const uint8_t EEPROM_VERSION = 0x55;
-static const uint8_t MODBUS_DEFAULT_ID = 71;
+static const uint8_t MODBUS_DEFAULT_ID = 76;
 
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
@@ -28,18 +29,26 @@ static uint8_t   inputCounters[INPUTS_NUM] = { 0, 0, 0, 0, 0, 0 };
 static int16_t   inputPulses[INPUTS_NUM] = { 0, 0, 0, 0, 0, 0 };
 static uint32_t  inputPulsesTimer = 0;
 static uint32_t  PULSES_MEASURE_US = 10000000;
+static const uint8_t DS_TEMP_NUM = 4;
+
+static const uint8_t OUTPUTS_NUM = 3;
+static const uint8_t OUTPUTS_PINS[OUTPUTS_NUM] = { 13, 12, 11 };
 
 static const uint8_t  CO2_SERIAL_RX_PIN = 10;
 static const uint8_t  CO2_SERIAL_TX_PIN = 9;
 static const uint32_t CO2_SERIAL_BAUNDRATE = 9600;
 
+#ifdef DEBUG_SERIAL_ENABLED
 static const uint8_t  DEBUG_SERIAL_RX_PIN = 12;
 static const uint8_t  DEBUG_SERIAL_TX_PIN = 13;
 static const uint32_t DEBUG_SERIAL_BAUNDRATE = 9600;
+#endif
+#ifdef DEBUG_LED_ENABLED
 static const uint8_t  DEBUG_LED_PIN = 11;
+#endif
 
-static const uint8_t I2C_SCL_PIN = A5;
-static const uint8_t I2C_SDA_PIN = A5;
+//static const uint8_t I2C_SCL_PIN = A5;
+//static const uint8_t I2C_SDA_PIN = A5;
 static const uint8_t ONEWIRE_PIN = A5;
 
 static const uint32_t RS485_SERIAL_BAUNDRATE = 9600;
@@ -47,15 +56,20 @@ static const uint32_t RS485_SERIAL_CONFIG = SERIAL_8N1;
 static const uint8_t  RS485_CTRL_PIN = 4;
 
 static const uint8_t ANALOG_INPUTS_NUM = 2;
-static const uint8_t ANALOG_INPUTS[] = { A3, A2 };
 
 static const byte LIGHT_SENSOR_PIN = A6;
 
+static const byte SDP810_ADRESS = 0x25;
+static const byte SDP811_ADRESS = 0x26;
+static const byte SHT31_ADRESS = 0x44;
+
 static uint8_t modbusID = 0;
 
+bool Sdp810Available = false;
+bool Sdp811Available = false;
 bool BmeAvailable = false;
+bool Sht31Available = false;
 bool BH1750Available = false;
-bool DsAvailable = false;
 bool MhzAvailable = false;
 
 struct Registers
@@ -69,21 +83,24 @@ struct Registers
     int16_t lux;          //5
     int16_t lux_prec;     //6
     
-    int16_t inputs_state; //7 97 coil
+    uint16_t inputs_state; //7 97 coil
     
-    int16_t inputs_pulses[INPUTS_NUM]; //8+INPUTS_NUM
+    uint16_t inputs_pulses[INPUTS_NUM]; //8+INPUTS_NUM
     
-    uint32_t pulses_time;   //14
+    uint16_t pulses_time;   //14
     
-    int16_t in1_value;    //19
-    int16_t in2_value;    //20
-    int16_t in9_value;    //21
-    int16_t in10_value;   //22
+    uint16_t inputs_value[ANALOG_INPUTS_NUM]; //15+ANALOG_INPUTS_NUM
     
-    int16_t oneWireTemp1; //23
-    int16_t oneWireTemp2; //24
-    int16_t oneWireTemp3; //25
-    int16_t oneWireTemp4; //26
+    int16_t SDP1_pressure; //17
+    int16_t SDP1_temp;     //18
+    int16_t SDP2_pressure; //19
+    int16_t SDP2_temp;     //20
+
+    
+    uint16_t inputs_counters[INPUTS_NUM]; //21+INPUTS_NUM
+    uint16_t outputs_state; // 27
+    uint16_t ds_available;
+    uint16_t ds_temps[DS_TEMP_NUM]; // 28+DS_TEMP_NUM
 }
 registers;
 
@@ -120,6 +137,7 @@ void readInputsInterruptHandler(uint32_t elapsedus)
       if(get_bit(registers.inputs_state, i))
       {
         ++inputPulses[i];
+        ++registers.inputs_counters[i];
       }
     }
   }
@@ -133,6 +151,14 @@ void readInputsInterruptHandler(uint32_t elapsedus)
       registers.inputs_pulses[i] = inputPulses[i];
       inputPulses[i] = 0;
     }
+  }
+}
+
+void registerWasRead(uint8_t id)
+{
+  if(id > 20 && id < 21+INPUTS_NUM)
+  {
+    ((uint16_t*)&registers)[id] = 0;
   }
 }
 
@@ -151,19 +177,18 @@ uint32_t calcTimestampDiff(uint32_t s, uint32_t e)
 /**
  *  Modbus object declaration
  */
-// Data wire is plugged into port 2 on the Arduino
-#define ONE_WIRE_BUS 8
 // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
-//OneWire           oneWire(ONE_WIRE_BUS);
+OneWire           oneWire(ONEWIRE_PIN);
 Modbus            modbusSlave(0, 1, RS485_CTRL_PIN);
 NeoSWSerial       mhzSerial(CO2_SERIAL_RX_PIN, CO2_SERIAL_TX_PIN);
-#ifdef DEBUG_SERIAL
+#ifdef DEBUG_SERIAL_ENABLED
 NeoSWSerial       debugSerial(DEBUG_SERIAL_RX_PIN, DEBUG_SERIAL_TX_PIN);
 #endif
 BME280I2C         bme;
 BH1750            bh1750;
-//DallasTemperature ds(&oneWire);
-#ifdef DEBUG_SERIAL
+DallasTemperature ds(&oneWire);
+
+#ifdef DEBUG_SERIAL_ENABLED
 #define ser_println(a, b, c, d) do{ debugSerial.begin(DEBUG_SERIAL_BAUNDRATE); debugSerial.print(a);debugSerial.print(b);debugSerial.print(c);debugSerial.println(d); debugSerial.end(); }while(0)
 #else
 #define ser_println(a, b, c, d)
@@ -235,9 +260,125 @@ bool mhz19ReadCo2(Stream& serial, int16_t& val)
   }
   return false;
 }
+
+bool spd8xxInit(uint8_t adress)
+{
+  // continous mode
+  uint8_t cmd0[2] = { 0x36, 0x15 };
+  byte ret;
+
+  Wire.beginTransmission(adress);
+  if (Wire.write(cmd0, 2) != 2) {
+      return false;
+  }
+  if ((ret = Wire.endTransmission(true)) != 0)
+  {
+    return false;
+  }
+
+  return true;
+}
+
+bool spd8xxRead(uint8_t adress, int16_t& temp, int16_t& pressure_diff)
+{
+  const uint8_t DATA_LEN = 9;
+  uint8_t data[DATA_LEN] = { 0 };
+
+  Wire.requestFrom(adress, DATA_LEN);
+  if (Wire.available() != DATA_LEN) {
+      return false;
+  }
+  for (int i = 0; i < DATA_LEN; ++i) {
+      data[i] = Wire.read();
+  }
+
+  float raw_pressure = (float)((int16_t)data[0] << 8 | data[1]);
+  float raw_scale = (float)((int16_t)data[6] << 8 | data[7]);
+
+  pressure_diff   = (int16_t)((raw_pressure / raw_scale) * 10.0);
+  temp = ((int16_t)data[3] << 8 | data[4]) / 20;
   
+  ser_println(F("I2C read  "), adress, ", pres ", pressure_diff);
+  ser_println(F("I2C read  "), adress, ", temp ", temp);
+  return true;
+}
+
+bool sht31Init(uint8_t adress)
+{
+  // continous mode, med rep, 1 mps
+  uint8_t cmd0[2] = { 0x20, 0x32 };
+  byte ret;
+
+  Wire.beginTransmission(adress);
+  if (Wire.write(cmd0, 2) != 2) {
+      return false;
+  }
+  if ((ret = Wire.endTransmission(true)) != 0)
+  {
+    return false;
+  }
+
+  return true;
+}
+bool sht31Read(uint8_t adress, float& temp, float& hum)
+{
+  const uint8_t DATA_LEN = 6;
+  uint8_t data[DATA_LEN] = { 0 };
+  
+  uint8_t cmd0[2] = { 0xE0, 0x00 };
+
+  Wire.beginTransmission(adress);
+  if (Wire.write(cmd0, 2) != 2) {
+      return false;
+  }
+  if (Wire.endTransmission(true) != 0)
+  {
+    return false;
+  }
+
+  Wire.requestFrom(adress, DATA_LEN);
+  if (Wire.available() != DATA_LEN) {
+      return false;
+  }
+  for (int i = 0; i < DATA_LEN; ++i) {
+      data[i] = Wire.read();
+  }
+
+  uint16_t raw_temp = (uint16_t)data[0] << 8 | (uint16_t)data[1];
+  uint16_t raw_hum = (uint16_t)data[3] << 8 | (uint16_t)data[4];
+
+  temp = -45.0 + 175.0 * ((float)raw_temp / (float)0xFFFF);
+  hum = 100.0 * ((float)raw_hum / (float)0xFFFF);
+  
+  ser_println(F("I2C read  "), adress, ", hum ", hum);
+  ser_println(F("I2C read  "), adress, ", temp ", temp);
+  return true;
+}
 static const byte EEPROM_VERSION_OFFSET = 0;
 static const byte EEPROM_ID_OFFSET = 1;
+
+void scanI2Ctmp()
+{
+  byte error, address;
+  int nDevices;
+  ser_println(F("Scanning..."), "", "", "");
+  nDevices = 0;
+  for(address = 1; address < 255; address++)
+  {
+  // The i2c_scanner uses the return value of
+  // the Write.endTransmisstion to see if
+  // a device did acknowledge to the address.
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+
+    if (error == 0)
+    {
+      ser_println(F("I2C at "), address, "", "");
+  
+      nDevices++;
+    }
+  }
+}
 
 void setup() 
 {
@@ -258,11 +399,16 @@ void setup()
 /*
  * 
  */
-  pinMode(DEBUG_LED_PIN, OUTPUT);
   for(uint8_t i = 0; i < INPUTS_NUM; ++i)
   {
-    pinMode(INPUTS_PINS[i], INPUT_PULLUP);      // sets the digital pins as input
+    pinMode(INPUTS_PINS[i], INPUT_PULLUP); // sets the digital pins as input
   }
+#ifndef DEBUG_SERIAL_ENABLED
+  for(uint8_t i = 0; i < OUTPUTS_NUM; ++i)
+  {
+    pinMode(OUTPUTS_PINS[i], OUTPUT);      // sets the digital pins as input
+  }
+#endif
 /*
  * 
  */
@@ -270,30 +416,51 @@ void setup()
 
   modbusSlave.setID(modbusID);
   modbusSlave.begin( 0 );
-  Wire.begin();
 
-/*
   // Start up the library
   ds.begin();
   ds.setResolution(10);
   ds.requestTemperatures();
   ds.setWaitForConversion(false);
-  DsAvailable = ds.getDeviceCount() > 0;
-  if(!DsAvailable)
+  registers.ds_available = ds.getDeviceCount();
+  if(registers.ds_available > DS_TEMP_NUM)
+    registers.ds_available = DS_TEMP_NUM;
+  if(!registers.ds_available)
   {
-    ser_println("Could not find DS18B20 sensor!");
+    ser_println("Could not find DS18B20 sensors!", "", "", "");
   }
-  */
-  // Start up the library
-  BmeAvailable = bme.begin();
-  if(!BmeAvailable){
-    ser_println("Could not find BME280 sensor!", "", "", "");
+  else
+  {
+    ser_println("Found ", registers.ds_available, " DS18B20 sensors", "");
   }
+  if(!registers.ds_available)
+  {
+    Wire.begin();
+    scanI2Ctmp();
+    Sdp810Available = spd8xxInit(SDP810_ADRESS);
+    if(!Sdp810Available){
+      ser_println("Could not find SDP810 sensor!", "", "", "");
+    }
+    Sdp811Available = spd8xxInit(SDP811_ADRESS);
+    if(!Sdp811Available){
+      ser_println("Could not find SDP811 sensor!", "", "", "");
+    }
+    // Start up the library
+    BmeAvailable = bme.begin();
+    if(!BmeAvailable){
+      ser_println("Could not find BME280 sensor!", "", "", "");
+    }
+    
+    // Start up the library
+    BH1750Available = bh1750.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
+    if(!BH1750Available){
+      ser_println("Could not find BH1750 sensor!", "", "", "");
+    }
 
-  // Start up the library
-  BH1750Available = bh1750.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
-  if(!BH1750Available){
-    ser_println("Could not find BH1750 sensor!", "", "", "");
+    Sht31Available = sht31Init(SHT31_ADRESS);
+    if(!Sht31Available){
+      ser_println("Could not find SHT31 sensor!", "", "", "");
+    }
   }
 
   mhzSerial.begin(CO2_SERIAL_BAUNDRATE);
@@ -310,11 +477,14 @@ void setup()
   //MsTimer2::start();
 }
 
-uint32_t lastMillis = 0;
+uint32_t lastMillisSensors = ~0;
+#ifdef DEBUG_LED_ENABLED
 uint32_t lastMillisLed = 0;
-uint32_t lastMillisLight = 0;
-uint32_t lastMillisPrint = 0;
-uint32_t lastMicrosInputs = 0;
+#endif
+uint32_t lastMillisLight = ~0;
+uint32_t lastMillisAnalog = ~0;
+uint32_t lastMillisPrint = ~0;
+uint32_t lastMicrosInputs = ~0;
 
 BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
 BME280::PresUnit presUnit(BME280::PresUnit_hPa);
@@ -331,37 +501,69 @@ void loop()
 {
     uint32_t sinceLastCheck;
     sinceLastCheck = calcTimestampDiff(lastMicrosInputs, micros());
-    if(sinceLastCheck >= 2000)
+    if(sinceLastCheck >= 1000)
     {
       lastMicrosInputs = micros();
 
       readInputsInterruptHandler(sinceLastCheck);
     }
+#ifdef DEBUG_LED_ENABLED
     sinceLastCheck = calcTimestampDiff(lastMillisLed, millis());
     if(sinceLastCheck > 1000)
     {
       lastMillisLed = millis();
-
       digitalWrite(DEBUG_LED_PIN, digitalRead(DEBUG_LED_PIN) == LOW ? HIGH : LOW);
     }
+#endif
     // read analog input
-    sinceLastCheck = calcTimestampDiff(lastMillis, millis());
+    sinceLastCheck = calcTimestampDiff(lastMillisAnalog, millis());
+    if(sinceLastCheck > 2000)
+    {
+      lastMillisAnalog = millis();
+      for(byte i = 0; i < ANALOG_INPUTS_NUM; ++i)
+      {
+        pinMode(INPUTS_PINS[i], INPUT);
+
+        registers.inputs_value[i] = analogRead(INPUTS_PINS[i]);
+        
+        pinMode(INPUTS_PINS[i], INPUT_PULLUP);
+      }
+
+      if(Sdp810Available)
+      {
+        spd8xxRead(SDP810_ADRESS, registers.SDP1_temp, registers.SDP1_pressure);
+      }
+      if(Sdp811Available)
+      {
+        spd8xxRead(SDP811_ADRESS, registers.SDP2_temp, registers.SDP2_pressure);
+      }
+    }
+    sinceLastCheck = calcTimestampDiff(lastMillisSensors, millis());
     if(sinceLastCheck > 10000)
     {
-      lastMillis = millis();
+      lastMillisSensors = millis();
 
       if(BmeAvailable)
       {
         bme.read(pres, temp, hum, tempUnit, presUnit);
-        registers.temperature = (int16_t)((temp-0.9f) * 10.0f);
-        registers.humidity = (int16_t)(hum * 10.0f);
+        if(!Sht31Available)
+        {
+          registers.temperature = (int16_t)((temp-0.9f) * 10.0f);
+          registers.humidity = (int16_t)(hum * 10.0f);
+        }
         registers.pressure = (int16_t)(pres);
       }
-      /*if(DsAvailable)
+      if(Sht31Available)
       {
-        registers.temp = (float)((int)(ds.getTempCByIndex(0) * 10.0f)) / 10.0f;
+        sht31Read(SHT31_ADRESS, temp, hum);
+        registers.temperature = (int16_t)(temp * 10.0f);
+        registers.humidity = (int16_t)(hum * 10.0f);
+      }
+      for(uint8_t i = 0; i < registers.ds_available; ++i)
+      {
+        registers.ds_temps[i] = (int)(ds.getTempCByIndex(i) * 10.0f);
         ds.requestTemperatures();
-      }*/
+      }
 
       if(MhzAvailable)
       {
@@ -396,11 +598,17 @@ void loop()
       ser_println("Pres: ", registers.pressure, ", light: ", registers.lux);
       ser_println("CO2: ", registers.co2, "Inputs: ", registers.inputs_state);
     }*/
-    int res = modbusSlave.poll( (uint16_t*)&registers, sizeof(Registers)/sizeof(int16_t) );
+    int res = modbusSlave.poll( (uint16_t*)&registers, sizeof(Registers)/sizeof(int16_t), registerWasRead );
     if(res != 0)
     {
       ser_println("Response send: ", res, "", "");
     }
+#ifndef DEBUG_SERIAL_ENABLED
+    for(uint8_t i = 0; i < OUTPUTS_NUM; ++i)
+    {
+      digitalWrite(OUTPUTS_PINS[i], ((registers.outputs_state & (1<<i)) != 0 ? HIGH : LOW));      // sets the digital pins as input
+    }
+#endif
     /*if(Serial.available())
     {
       do
