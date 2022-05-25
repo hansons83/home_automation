@@ -37,7 +37,7 @@ uint32_t lastAnalogCheckMs = 0, lastCalcMs = 0;
 
 void loop() {
   // put your main code here, to run repeatedly:
-  if(millis() - lastAnalogCheckMs > 2)
+  //if(millis() - lastAnalogCheckMs > 2)
   {
     lastAnalogCheckMs = millis();
     for(byte i = 0; i < 4; ++i)
@@ -49,7 +49,7 @@ void loop() {
         minVal[i] = aval;
     }
   }
-  if(millis() - lastCalcMs > 25)
+  if(millis() - lastCalcMs > 20)
   {
     lastCalcMs = millis();
     

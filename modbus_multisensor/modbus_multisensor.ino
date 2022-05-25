@@ -17,16 +17,18 @@
 //#define DEBUG_SERIAL_ENABLED
 //#define DEBUG_LED_ENABLED
 
-static const int16_t SW_VERSION = 0x0D02;
+static const int16_t SW_VERSION = 0x0D06;
 static const uint8_t EEPROM_VERSION = 0x55;
-static const uint8_t MODBUS_DEFAULT_ID = 76;
+static const uint8_t MODBUS_DEFAULT_ID = 81;
 
 static const uint8_t INPUT_HIGH_STATE = 0xFF;
 static const uint8_t INPUT_LOW_STATE = 0x00;
 static const uint8_t INPUTS_NUM = 6;
+static const uint8_t INPUTS_INTERRUPT_NUM = 2;
 static const uint8_t INPUTS_PINS[INPUTS_NUM] = { A3, A2, 2, 3, 5, 6 };
 static uint8_t   inputCounters[INPUTS_NUM] = { 0, 0, 0, 0, 0, 0 };
 static int16_t   inputPulses[INPUTS_NUM] = { 0, 0, 0, 0, 0, 0 };
+static volatile int16_t inputInterruptPulses[INPUTS_INTERRUPT_NUM] = { 0, 0 };
 static uint32_t  inputPulsesTimer = 0;
 static uint32_t  PULSES_MEASURE_US = 10000000;
 static const uint8_t DS_TEMP_NUM = 4;
@@ -99,8 +101,9 @@ struct Registers
     
     uint16_t inputs_counters[INPUTS_NUM]; //21+INPUTS_NUM
     uint16_t outputs_state; // 27
-    uint16_t ds_available;
-    uint16_t ds_temps[DS_TEMP_NUM]; // 28+DS_TEMP_NUM
+    uint16_t ds_available;  //28
+    uint16_t ds_temps[DS_TEMP_NUM]; // 29+DS_TEMP_NUM
+    uint16_t interrupt_pulses[INPUTS_INTERRUPT_NUM]; // 33+INPUTS_INTERRUPT_NUM
 }
 registers;
 
@@ -108,6 +111,24 @@ registers;
 #define clear_bit(var, bit_nr) ((var) &= ~(1 << (bit_nr)))
 #define get_bit(var, bit_nr) (((var) & (1 << (bit_nr))) ? true : false)
 
+void input3InterruptHandler()
+{
+  static uint32_t lastInt;
+  if(millis() > lastInt+5)
+  {
+    lastInt = millis();
+    inputInterruptPulses[0]++;
+  }
+}
+void input4InterruptHandler()
+{
+  static uint32_t lastInt;
+  if(millis() > lastInt+5)
+  {
+    lastInt = millis();
+    inputInterruptPulses[1]++;
+  }
+}
 void readInputsInterruptHandler(uint32_t elapsedus)
 {
   int16_t lastinputsState = registers.inputs_state;
@@ -151,6 +172,12 @@ void readInputsInterruptHandler(uint32_t elapsedus)
       registers.inputs_pulses[i] = inputPulses[i];
       inputPulses[i] = 0;
     }
+    
+    noInterrupts();
+    registers.interrupt_pulses[0] = inputInterruptPulses[0];
+    registers.interrupt_pulses[1] = inputInterruptPulses[1];
+    inputInterruptPulses[0] = inputInterruptPulses[1] = 0;
+    interrupts();
   }
 }
 
@@ -193,10 +220,6 @@ DallasTemperature ds(&oneWire);
 #else
 #define ser_println(a, b, c, d)
 #endif
-#define ANALOG_PIN       A0
-#define INTERRUPT_PIN    7
-#define INTERRUPT_ACTIVE HIGH
-#define INTERRUPT_MES    5
 
 uint32_t getAvgVal(uint32_t* valArray, byte sIndex, byte count)
 {
@@ -380,6 +403,20 @@ void scanI2Ctmp()
   }
 }
 
+#define ACS_Pin A3                        //Sensor data pin on A0 analog input
+
+float ACS_Value;                              //Here we keep the raw data valuess
+float testFrequency = 50;                    // test signal frequency (Hz)
+float windowLength = 40.0/testFrequency;     // how long to average the signal, for statistist
+float intercept = 0; // to be adjusted based on calibration testing
+float slope = 0.0752; // to be adjusted based on calibration testing
+                      //Please check the ACS712 Tutorial video by SurtrTech to see how to get them because it depends on your sensor, or look below
+float Amps_TRMS; // estimated actual current in amps
+
+unsigned long printPeriod = 1000; // in milliseconds
+// Track time in milliseconds since last reading 
+unsigned long previousMillis = 0;
+
 void setup() 
 {
   ser_println("Modbus sensor ver: ", SW_VERSION, "", "");
@@ -403,6 +440,11 @@ void setup()
   {
     pinMode(INPUTS_PINS[i], INPUT_PULLUP); // sets the digital pins as input
   }
+  attachInterrupt(digitalPinToInterrupt(INPUTS_PINS[2]), input3InterruptHandler, FALLING);
+  attachInterrupt(digitalPinToInterrupt(INPUTS_PINS[3]), input4InterruptHandler, FALLING);
+  
+  pinMode(ACS_Pin,INPUT);  //Define the pin mode
+  
 #ifndef DEBUG_SERIAL_ENABLED
   for(uint8_t i = 0; i < OUTPUTS_NUM; ++i)
   {
@@ -436,7 +478,7 @@ void setup()
   if(!registers.ds_available)
   {
     Wire.begin();
-    scanI2Ctmp();
+    //scanI2Ctmp();
     Sdp810Available = spd8xxInit(SDP810_ADRESS);
     if(!Sdp810Available){
       ser_println("Could not find SDP810 sensor!", "", "", "");
@@ -472,9 +514,8 @@ void setup()
   //mhzSerial.end();
   
   ser_println("Starting ID:", modbusID, "", "");
-
-  //MsTimer2::set(2, readInputsInterruptHandler);
-  //MsTimer2::start();
+  
+  interrupts();
 }
 
 uint32_t lastMillisSensors = ~0;
@@ -482,6 +523,7 @@ uint32_t lastMillisSensors = ~0;
 uint32_t lastMillisLed = 0;
 #endif
 uint32_t lastMillisLight = ~0;
+uint32_t lastMillisLightMeasure = ~0;
 uint32_t lastMillisAnalog = ~0;
 uint32_t lastMillisPrint = ~0;
 uint32_t lastMicrosInputs = ~0;
@@ -490,11 +532,13 @@ BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
 BME280::PresUnit presUnit(BME280::PresUnit_hPa);
 float temp(NAN), hum(NAN), pres(NAN);
 
-#define MAX_ADC_READING 1023.0f
-#define ADC_REF_VOLTAGE 5.0f
-#define REF_RESISTANCE  10000.0f
-#define LUX_CALC_SCALAR 6954961.7f//12518931.0f
-#define LUX_CALC_EXPONENT -1.405
+const float MAX_ADC_READING = 1023.0f;
+const float ADC_REF_VOLTAGE = 5.0f;
+const float REF_RESISTANCE =  10000.0f;
+const float LUX_CALC_SCALAR = 12518931.0f;//6954961.7f;//12518931.0f
+const float LUX_CALC_EXPONENT = -1.405;
+float lightReadVal = 0.0;
+uint16_t lightReadCount = 0;
 
 #define ANEMOMENTER_SPEED_REVOLUTION (2401.0f/2.0f)
 void loop()
@@ -548,7 +592,7 @@ void loop()
         bme.read(pres, temp, hum, tempUnit, presUnit);
         if(!Sht31Available)
         {
-          registers.temperature = (int16_t)((temp-0.9f) * 10.0f);
+          registers.temperature = (int16_t)(temp * 10.0f);
           registers.humidity = (int16_t)(hum * 10.0f);
         }
         registers.pressure = (int16_t)(pres);
@@ -559,9 +603,12 @@ void loop()
         registers.temperature = (int16_t)(temp * 10.0f);
         registers.humidity = (int16_t)(hum * 10.0f);
       }
-      for(uint8_t i = 0; i < registers.ds_available; ++i)
+      if(registers.ds_available > 0)
       {
-        registers.ds_temps[i] = (int)(ds.getTempCByIndex(i) * 10.0f);
+        for(uint8_t i = 0; i < registers.ds_available; ++i)
+        {
+          registers.ds_temps[i] = (int)(ds.getTempCByIndex(i) * 10.0f);
+        }
         ds.requestTemperatures();
       }
 
@@ -572,22 +619,36 @@ void loop()
     }
     // Check if response arrived and read it
     mhz19ReadCo2(mhzSerial, registers.co2);
-    
+
+
+    sinceLastCheck = calcTimestampDiff(lastMillisLightMeasure, millis());
+    if(sinceLastCheck > 20)
+    {
+      lastMillisLightMeasure = millis();
+      
+      lightReadVal += analogRead(LIGHT_SENSOR_PIN);
+      lightReadCount++;
+    }
     sinceLastCheck = calcTimestampDiff(lastMillisLight, millis());
     if(sinceLastCheck > 2000)
     {
       lastMillisLight = millis();
+      lightReadVal /= lightReadCount;
       //ser_println("Reading analog");
-      
-      float resVoltage = (float)analogRead(LIGHT_SENSOR_PIN) * (ADC_REF_VOLTAGE / MAX_ADC_READING);
+      float resVoltage = lightReadVal * ADC_REF_VOLTAGE / MAX_ADC_READING;
       float ldrResistance = (REF_RESISTANCE * (ADC_REF_VOLTAGE - resVoltage)) / resVoltage;
-    
+      
+      lightReadVal = 0.0f;
+      lightReadCount = 0;
+      
       registers.lux = (int16_t)(LUX_CALC_SCALAR * pow(ldrResistance, LUX_CALC_EXPONENT) * 10.0f);
       
       if(BH1750Available)
       {
-        registers.lux_prec = bh1750.readLightLevel();
+        registers.lux_prec = (int)(bh1750.readLightLevel() * 10.0f);
       }
+      
+      ser_println("BH1750: ", registers.lux_prec, ", ", registers.lux);
     }
     /*sinceLastCheck = calcTimestampDiff(lastMillisPrint, millis());
     if(sinceLastCheck > 10000)
@@ -609,15 +670,5 @@ void loop()
       digitalWrite(OUTPUTS_PINS[i], ((registers.outputs_state & (1<<i)) != 0 ? HIGH : LOW));      // sets the digital pins as input
     }
 #endif
-    /*if(Serial.available())
-    {
-      do
-      {
-        ser_print(Serial.read());
-        ser_print(":");
-      }
-      while(Serial.available());
-    }*/
-
 }
 

@@ -11,7 +11,7 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-#define SOFT_VER F("1.3.3")
+#define SOFT_VER F("1.4.0")
 
 #define SDA_PORT PORTC
 #define SDA_PIN 4
@@ -73,6 +73,7 @@ static  byte     lastinputsState = 0;
 static  byte     outputsState = 0;
 static  byte     outputsStateToPublish = 0xFF;
 static  uint32_t outputsTimer[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
+static  uint32_t hwResetCount = 0;
 
 void setOutputState(int index, bool state)
 {
@@ -315,26 +316,11 @@ void setup()
   
   MCP27008_setup(sWire, MCP27008_ADRESS);
   MCP27008_write(sWire, MCP27008_ADRESS, outputsState);
-  
-  MsTimer2::set(2, readInputsInterruptHandler);
-  MsTimer2::start();
-
-  // Enable eth module.
-  digitalWrite(A0, HIGH);
 
   mqttClient.setCallback(callback);
-  //Ethernet.begin(mac, IPAddress(192, 168, 1, 6), IPAddress(255, 255, 255, 0), IPAddress(192, 168, 1, 254));
-  while(!Ethernet.begin(mac))
-  {
-    delay(5000);
-  }
-  ethServer.begin();
 
-  Serial.print(F("Ethernet: "));
-  Serial.println(Ethernet.localIP()); 
-  //Serial.println(Ethernet.subnetMask());
-  //Serial.println(Ethernet.gatewayIP());
-  //Serial.println(Ethernet.dnsServerIP());
+  MsTimer2::set(2, readInputsInterruptHandler);
+  MsTimer2::start();
 }
 
 static uint32_t lastConnectMillis = 0;
@@ -444,12 +430,49 @@ void addCustomForms(EthernetClient& client)
   client.println(millis()); 
   client.print(F("\tVersion:\t\t"));
   client.println(SOFT_VER);
+  client.print(F("\tEthernet resets:\t"));
+  client.println(hwResetCount);
 }
 
-static uint32_t maintainLastMillis = 0;
+static uint32_t maintainLastMillis = 0, modCheckLastMillis = 0;
 static byte maintainRes, connectionFlag = 0;
+static bool ethernedConfigured = false;
 void loop()
 {
+  if(!ethernedConfigured)
+  {
+    // Perform HW reset
+    digitalWrite(ETH_SHIELD_RESET_PIN, LOW);
+    delay(10);
+    digitalWrite(ETH_SHIELD_RESET_PIN, HIGH);
+    
+    //Ethernet.begin(mac, IPAddress(192, 168, 1, 6), IPAddress(255, 255, 255, 0), IPAddress(192, 168, 1, 254));
+    while(!Ethernet.begin(mac))
+    {
+      delay(5000);
+    }
+    ethServer.begin();
+    
+    Serial.print(F("Ethernet: "));
+    Serial.println(Ethernet.localIP()); 
+    //Serial.println(Ethernet.subnetMask());
+    //Serial.println(Ethernet.gatewayIP());
+    //Serial.println(Ethernet.dnsServerIP());
+
+    ethernedConfigured = true;
+  }
+  if(calcTimestampDiff(modCheckLastMillis, millis()) >= 1000)
+  {
+    modCheckLastMillis = millis();
+ 
+    if(!(uint32_t)Ethernet.localIP())
+    {
+      Serial.println("Ethernet reset detected");
+      ethernedConfigured = false;
+      hwResetCount++;
+      return;
+    }
+  }
   if(calcTimestampDiff(maintainLastMillis, millis()) >= 5000)
   {
     maintainLastMillis = millis();

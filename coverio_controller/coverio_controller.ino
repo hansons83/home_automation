@@ -13,7 +13,7 @@
 #include <EEPROM.h>
 
 
-#define SOFT_VER F("1.3.2")
+#define SOFT_VER F("1.4.0")
 
 #ifdef COVERIO_DEBUG_MODE
 #define SerialPrint(x) Serial.print(x)
@@ -116,6 +116,7 @@ static  byte     inputsState = 0;
 static  uint32_t lastinputsReleased[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  uint32_t lastinputsPressed[NUM_IOS] = {0, 0, 0, 0, 0, 0, 0, 0};
 static  byte     lastinputsState = 0;
+static  uint32_t hwResetCount = 0;
 static  volatile int8_t requestedPos[4] = { -1, -1, -1, -1 };
 static  volatile int8_t requestedTilt[4] = { -1, -1, -1, -1 };
 static  volatile bool   requestedCalibration[4] = { false, false, false, false };
@@ -194,6 +195,7 @@ static uint32_t  calibrationTimestamp[4] = {0, 0, 0, 0};
 static byte      stopRequested[4] = { false, false, false, false};
 
 static  byte     monitorCurrent = 0;
+static uint32_t  currentLevelLastCheck = 0xFFFFF;
 
 bool noCurrentFlow(uint8_t chInd)
 {
@@ -205,6 +207,7 @@ bool noCurrentFlow(uint8_t chInd)
 void startMonitorCurrentLevel(byte ch)
 {
   monitorCurrent |= 1 << ch;
+  currentLevelLastCheck = 0;
 }
 /*
  * 
@@ -218,18 +221,17 @@ void stopMonitorCurrentLevel(byte ch)
  */
 void updateCurrentLevel()
 {
-  static uint32_t lastCheck = 0;
 
   if(!monitorCurrent)
     return;
     
   const uint32_t millisNow = millis();
 
-  if(calcTimestampDiff(lastCheck, millisNow) < 50)
+  if(calcTimestampDiff(currentLevelLastCheck, millisNow) < 50)
   {
     return;
   }
-  lastCheck = millisNow;
+  currentLevelLastCheck = millisNow;
   
   sWire.requestFrom(ATTINY_ADDRESS, (uint8_t)4);
   while(sWire.available() < 4)
@@ -239,7 +241,9 @@ void updateCurrentLevel()
   for(byte byteNr = 0; byteNr < 4; ++byteNr)
   {
     currentLevel[byteNr] = (byte)sWire.read();
+    SerialPrint(currentLevel[byteNr])SerialPrint(", ");
   }
+  SerialPrintLn("");
 }
 /*
  * 
@@ -411,10 +415,10 @@ void enterState(byte chInd, byte expectedState)
     {
       return;
     }
-    Serial.print(F("CH:"));
-    Serial.print(chInd);
-    Serial.print(F(" NS:"));
-    Serial.println(stateNames[expectedState]);
+    SerialPrint(F("CH:"));
+    SerialPrint(chInd);
+    SerialPrint(F(" NS:"));
+    SerialPrintLn(stateNames[expectedState]);
     
     stateEnterPos[chInd] = currentPos[chInd];
     stateEnterTilt[chInd] = currentTilt[chInd];
@@ -875,14 +879,14 @@ void callback(char* topic, byte* payload, unsigned int length)
   int8_t channelInd = 0;
   int8_t value;
   char* substr;
-  Serial.println(F("Rcv: "));
-  Serial.println(topic);
-  Serial.print("[");
+  SerialPrintLn(F("Rcv: "));
+  SerialPrintLn(topic);
+  SerialPrint("[");
   int i=0;
   for (i=0;i<length;i++) {
-    Serial.print((char)payload[i]);
+    SerialPrint((char)payload[i]);
   }
-  Serial.println("]");
+  SerialPrintLn("]");
 
   if(length == 0)
   {
@@ -901,20 +905,20 @@ void callback(char* topic, byte* payload, unsigned int length)
     if(length == 4 && (memcmp(payload, "STOP", 4) == 0 || memcmp(payload, "stop", 4) == 0))
     {
       stopRequested[channelInd] = true;
-      Serial.println(": Stop");
+      SerialPrintLn(": Stop");
     }
     else if(length == 4 && (memcmp(payload, "OPEN", 4) == 0 || memcmp(payload, "open", 4) == 0))
     {
       requestedPos[channelInd] = 0;
       
-      Serial.println(": Pos = 0");
+      SerialPrintLn(": Pos = 0");
       //requestedTilt[channelInd] = 0;
     }
     else if(length == 5 && (memcmp(payload, "CLOSE", 5) == 0 || memcmp(payload, "close", 5) == 0))
     {
       requestedPos[channelInd] = 100;
       //requestedTilt[channelInd] = 100;
-      Serial.println(": Pos = 100");
+      SerialPrintLn(": Pos = 100");
     }
     return;
   }
@@ -925,7 +929,7 @@ void callback(char* topic, byte* payload, unsigned int length)
     value = atoi((const char*)payload);
     requestedPos[channelInd] = value;
     
-    Serial.print("Pos: ");Serial.println(requestedPos[channelInd]);
+    SerialPrint("Pos: ");SerialPrintLn(requestedPos[channelInd]);
     return;
   }
   substr = strstr(topic, "/tilt");
@@ -934,7 +938,7 @@ void callback(char* topic, byte* payload, unsigned int length)
     channelInd = *(substr-1) - '1';
     value = atoi((const char*)payload);
     requestedTilt[channelInd] = value;
-    Serial.print("Tilt: ");Serial.println(requestedTilt[channelInd]);
+    SerialPrint("Tilt: ");SerialPrintLn(requestedTilt[channelInd]);
     return;
   }
   substr = strstr(topic, "/calib");
@@ -942,7 +946,7 @@ void callback(char* topic, byte* payload, unsigned int length)
   {
     channelInd = *(substr-1) - '1';
     requestedCalibration[channelInd] = true;
-    Serial.println("Calib");
+    SerialPrintLn("Calib");
     return;
   }
 }
@@ -1086,7 +1090,6 @@ void setup()
   Serial.println(clientId);
   Serial.println(topicBase);
   
-  
 #ifdef COVERIO_DEBUG_MODE
   for(byte i = 0; i < 4; ++i)
   {
@@ -1104,66 +1107,14 @@ void setup()
   sWire.begin();
 /*
   scanI2C(sWire);
-
-  uint32_t timeNow = 0, bytesReceived = 0;
-  byte NUM_BYTES = 4, SLAVE_ADDR = 0x22;
-  while(1)
-  {
-    if (millis() - timeNow >= 750) {                                        // trigger every 750mS
-      
-        Serial.print(F("Milis: "));Serial.print(micros());Serial.println("");
-        // request bytes from slave
-        sWire.requestFrom(SLAVE_ADDR, NUM_BYTES);
-        while(sWire.available() < 4)
-        {
-        }
-        bytesReceived = 0;
-        
-        Serial.print(F("Milis: "));Serial.print(micros());Serial.print(", ");
-        
-        bytesReceived = 0;
-        timeNow = millis();                                                // mark preset time for next trigger
-    }
-    while(bytesReceived < 4)
-    {
-      int c = sWire.read();    // receive a byte as character
-      Serial.print(F("Byte["));
-      Serial.print(bytesReceived);
-      Serial.print(F("]: "));
-      Serial.print(c);
-      Serial.print(F("\t"));
-      ++bytesReceived;
-      if(bytesReceived == 4)
-      { 
-        Serial.println("");
-      }
-    }
-    
-    delay(10);
-  }
 */
   MCP27008_setup(sWire, MCP27008_ADRESS);
   MCP27008_write(sWire, MCP27008_ADRESS, outputsState);
-  
-  MsTimer2::set(2, readInputsInterruptHandler);
-  MsTimer2::start();
-  
-  // Enable eth module.
-  digitalWrite(A0, HIGH);
 
   mqttClient.setCallback(callback);
-  //Ethernet.begin(mac, IPAddress(192, 168, 1, 6), IPAddress(255, 255, 255, 0), IPAddress(192, 168, 1, 254));
-  while(!Ethernet.begin(mac))
-  {
-    delay(1000);
-  }
-  ethServer.begin();
 
-  Serial.print(F("Ethernet: "));
-  Serial.println(Ethernet.localIP()); 
-  //Serial.println(Ethernet.subnetMask());
-  //Serial.println(Ethernet.gatewayIP());
-  //Serial.println(Ethernet.dnsServerIP());
+  MsTimer2::set(2, readInputsInterruptHandler);
+  MsTimer2::start();
 }
 
 static uint32_t lastConnectMillis = 0;
@@ -1339,12 +1290,12 @@ bool processCustomParams(const char* reqStr)
   }*/
   if(parseTiltTime(reqStr, boardSettings.tilt_time))
   {
-    Serial.print(F("R: tilt\t:"));
+    SerialPrint(F("R: tilt\t:"));
     for(byte i = 0; i < 4; ++i)
     {
-      Serial.print(boardSettings.tilt_time[i]);
-      if(i<3)Serial.print(F(","));
-      else Serial.println(F(""));
+      SerialPrint(boardSettings.tilt_time[i]);
+      if(i<3)SerialPrint(F(","));
+      else SerialPrintLn(F(""));
     }
     result = true;
   }
@@ -1353,9 +1304,9 @@ bool processCustomParams(const char* reqStr)
     Serial.print(F("R: calib:"));
     for(byte i = 0; i < 4; ++i)
     {
-      Serial.print(requestedCalibration[i]);
-      if(i<3)Serial.print(F(","));
-      else Serial.println(F(""));
+      SerialPrint(requestedCalibration[i]);
+      if(i<3)SerialPrint(F(","));
+      else SerialPrintLn(F(""));
     }
   }
   return result;
@@ -1397,6 +1348,8 @@ void addCustomForms(EthernetClient& client)
   client.println(millis()); 
   client.print(F("\tVersion:\t\t"));
   client.println(SOFT_VER);
+  client.print(F("\tEthernet resets:\t"));
+  client.println(hwResetCount);
 }
 void addCustomSend(EthernetClient& client)
 {
@@ -1424,10 +1377,46 @@ void addCustomSend(EthernetClient& client)
   */
 }
   
-static uint32_t maintainLastMillis = 0;
+static uint32_t maintainLastMillis = 0, modCheckLastMillis = 0;
 static byte maintainRes, connectionFlag;
+static bool ethernedConfigured = false;
 void loop()
 {
+  
+  if(!ethernedConfigured)
+  {
+    // Perform HW reset
+    digitalWrite(ETH_SHIELD_RESET_PIN, LOW);
+    delay(10);
+    digitalWrite(ETH_SHIELD_RESET_PIN, HIGH);
+    
+    //Ethernet.begin(mac, IPAddress(192, 168, 1, 6), IPAddress(255, 255, 255, 0), IPAddress(192, 168, 1, 254));
+    while(!Ethernet.begin(mac))
+    {
+      delay(5000);
+    }
+    ethServer.begin();
+    
+    Serial.print(F("Ethernet: "));
+    Serial.println(Ethernet.localIP()); 
+    //Serial.println(Ethernet.subnetMask());
+    //Serial.println(Ethernet.gatewayIP());
+    //Serial.println(Ethernet.dnsServerIP());
+
+    ethernedConfigured = true;
+  }
+  if(calcTimestampDiff(modCheckLastMillis, millis()) >= 1000)
+  {
+    modCheckLastMillis = millis();
+ 
+    if(!(uint32_t)Ethernet.localIP())
+    {
+      Serial.println("Ethernet reset detected");
+      ethernedConfigured = false;
+      hwResetCount++;
+      return;
+    }
+  }
   const uint32_t millisNow = millis();
   if(calcTimestampDiff(maintainLastMillis, millisNow) >= 10000)
   {

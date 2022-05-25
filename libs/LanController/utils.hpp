@@ -121,7 +121,7 @@ bool getMacAddress(OneWire& oneWire, byte* target)
   //returns a 1/TRUE if presence pulse detected
   target[0] = 0x6C;
   target[1] = 0x75;
-  if (oneWire.reset() == TRUE)
+  if (oneWire.reset() == true)
   {
     oneWire.write(0x33);  //Send Read data command
     //Serial.print("FC: 0x");
